@@ -70,7 +70,7 @@
 
       /* ── Depth color scale ──────────────────────────────────────── */
       const DEPTH_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#f97316', '#ef4444'];
-      const depthColor = (d) => d.isConflict ? '#f59e0b' : DEPTH_COLORS[Math.min(d.depth ?? 0, DEPTH_COLORS.length - 1)];
+      const depthColor = (d) => d.isConflict ? '#f59e0b' : DEPTH_COLORS[Math.min(d.pkgDepth ?? 0, DEPTH_COLORS.length - 1)];
 
       /* ── Tooltip helpers ────────────────────────────────────────── */
       const $tip = () => document.getElementById('sankey-tooltip');
@@ -167,47 +167,60 @@
 
       /* ─────────────────────────────────────────────────────────────
          computeDepths
-         Returns topological (longest-path) depth from root via
-         Kahn's BFS, so hoisted packages land AFTER their deepest
-         dependent — not at the shallow npm-hoisted position.
-           depth         — { pkgName → longest path from root }
+         BFS shortest-path depth via declared dep edges (matches
+         npm ls depth).  incomingCount counts all dependents across
+         the whole graph regardless of depth direction.
+           depth         — { pkgName → min hops from root }
            incomingCount — { pkgName → # packages that depend on it }
       ───────────────────────────────────────────────────────────── */
       function computeDepths(packages, rootName) {
-        // 1. BFS reachability pass
-        const reachable = new Set([rootName]);
-        const bfsQ = [rootName];
-        while (bfsQ.length) {
-          const curr = bfsQ.shift();
+        const depth = { [rootName]: 0 };
+        const queue = [rootName];
+        while (queue.length) {
+          const curr = queue.shift();
           for (const dep of packages[curr]?.deps ?? []) {
-            if (dep in packages && !reachable.has(dep)) { reachable.add(dep); bfsQ.push(dep); }
-          }
-        }
-
-        // 2. Build adjacency + in-degree for reachable subgraph
-        const inDeg = {}, children = {}, incomingCount = {};
-        for (const id of reachable) { inDeg[id] = 0; children[id] = []; }
-        for (const id of reachable) {
-          for (const dep of packages[id]?.deps ?? []) {
-            if (reachable.has(dep)) {
-              children[id].push(dep);
-              inDeg[dep]++;
-              incomingCount[dep] = (incomingCount[dep] ?? 0) + 1;
+            if (dep in packages && !(dep in depth)) {
+              depth[dep] = depth[curr] + 1;
+              queue.push(dep);
             }
           }
         }
-
-        // 3. Kahn's topo-BFS — assign LONGEST path depth
-        const depth = { [rootName]: 0 };
-        const q = [...reachable].filter(id => inDeg[id] === 0);
-        while (q.length) {
-          const curr = q.shift();
-          for (const dep of children[curr]) {
-            depth[dep] = Math.max(depth[dep] ?? 0, depth[curr] + 1);
-            if (--inDeg[dep] === 0) q.push(dep);
+        const incomingCount = {};
+        for (const pkg of Object.values(packages)) {
+          for (const dep of pkg.deps ?? []) {
+            if (dep in depth) incomingCount[dep] = (incomingCount[dep] ?? 0) + 1;
           }
         }
         return { depth, incomingCount };
+      }
+
+      /* ─────────────────────────────────────────────────────────────
+         computeSubgraphLongestPath
+         Topological longest-path depth restricted to a subgraph.
+         Used in focus mode so every rendered edge flows forward
+         (no orphans from globally-shorter paths that aren't visible).
+      ───────────────────────────────────────────────────────────── */
+      function computeSubgraphLongestPath(packages, subgraph, rootName) {
+        const inDeg = {}, children = {};
+        for (const id of subgraph) { inDeg[id] = 0; children[id] = []; }
+        for (const id of subgraph) {
+          for (const dep of packages[id]?.deps ?? []) {
+            if (subgraph.has(dep)) {
+              children[id].push(dep);
+              inDeg[dep]++;
+            }
+          }
+        }
+        const depth = { [rootName]: 0 };
+        const q = [...subgraph].filter(id => inDeg[id] === 0);
+        while (q.length) {
+          const curr = q.shift();
+          for (const dep of children[curr]) {
+            depth[dep] = Math.max(depth[dep] ?? 0, (depth[curr] ?? 0) + 1);
+            if (--inDeg[dep] === 0) q.push(dep);
+          }
+        }
+        return depth;
       }
 
       /* ─────────────────────────────────────────────────────────────
@@ -313,19 +326,25 @@
          filter: 'all' | 'prod' | 'dev' | 'conflicts'
       ───────────────────────────────────────────────────────────── */
       function buildSankeyData(packages, rootName, maxDepth = 3, { filter = 'all', conflictSet = new Set(), pathIndex = new Map(), focusPkg = null, includePeerDeps = false } = {}) {
-        const { depth, incomingCount } = computeDepths(packages, rootName);
+        const { depth: globalDepth, incomingCount } = computeDepths(packages, rootName);
+
+        const conflictPaths = filter === 'conflicts'
+          ? computeConflictPaths(packages, globalDepth, conflictSet)
+          : null;
+
+        const focusSubgraph = focusPkg
+          ? computeFocusSubgraph(packages, globalDepth, focusPkg)
+          : null;
+
+        // In focus mode: longest-path within subgraph keeps every visible edge forward.
+        // Otherwise: BFS shortest-path (matches `npm ls` depth intuition).
+        const depth = focusSubgraph
+          ? computeSubgraphLongestPath(packages, focusSubgraph, rootName)
+          : globalDepth;
 
         const depthValues = Object.values(depth);
         const maxActualDepth = depthValues.length > 1 ? Math.max(...depthValues) : 0;
         const effectiveMax = Math.min(maxDepth, maxActualDepth);
-
-        const conflictPaths = filter === 'conflicts'
-          ? computeConflictPaths(packages, depth, conflictSet)
-          : null;
-
-        const focusSubgraph = focusPkg
-          ? computeFocusSubgraph(packages, depth, focusPkg)
-          : null;
 
         // Collect all distinct installed versions per conflict package
         const versionMap = new Map(); // pkgName → Map(version → nodeId)
@@ -368,6 +387,25 @@
           }
         }
 
+        // Per-version depth: max(parent depth that resolves to this version) + 1.
+        // Different versions of the same conflict package end up at different
+        // columns based on who actually requires them, so links never go backward.
+        const conflictVersionDepth = new Map(); // nodeId → depth
+        for (const [pkgName, vmap] of versionMap) {
+          for (const [ver, nodeId] of vmap) {
+            let maxParentDepth = -1;
+            for (const [parentPath, parentEntry] of pathIndex) {
+              const pdeps = [...(parentEntry.deps ?? []), ...(includePeerDeps ? (parentEntry.peerDeps ?? []) : [])];
+              if (!pdeps.includes(pkgName)) continue;
+              if (resolveDepVersion(parentPath, pkgName, pathIndex) !== ver) continue;
+              const parentPkgName = parentPath === '' ? rootName : parentEntry.name;
+              const pd = depth[parentPkgName];
+              if (pd !== undefined && pd > maxParentDepth) maxParentDepth = pd;
+            }
+            conflictVersionDepth.set(nodeId, maxParentDepth >= 0 ? maxParentDepth + 1 : (depth[pkgName] ?? 1));
+          }
+        }
+
         // Build nodes — conflict version nodes use path-based depth so that
         // e.g. node_modules/@tanstack/router-plugin/node_modules/zod gets
         // depth 2 (not BFS depth 1), allowing forward links from router-plugin.
@@ -382,24 +420,21 @@
               const vmap = versionMap.get(id);
               if (!vmap) return;
               for (const [ver, nodeId] of vmap) {
-                if (nodeIdx.has(nodeId)) return;
-                // Use canonical topo depth for all versions of a conflict package.
-                // Topo depth = max(topo depth of all dependents) + 1, which is
-                // exactly what computeDepths now returns for the canonical name.
-                if (d < 1 || d > effectiveMax) return;
-                const vDepth = d;
+                if (nodeIdx.has(nodeId)) continue;
+                const vDepth = conflictVersionDepth.get(nodeId) ?? d;
+                if (vDepth < 1 || vDepth > effectiveMax) continue;
                 nodeIdx.set(nodeId, nodeArr.length);
-                nodeArr.push({ id: nodeId, name: `${id}@${ver}`, pkgName: id, depth: vDepth, version: ver, dev: packages[id]?.dev ?? false, isConflict: true, isRoot: false });
+                nodeArr.push({ id: nodeId, name: `${id}@${ver}`, pkgName: id, pkgDepth: vDepth, version: ver, dev: packages[id]?.dev ?? false, isConflict: true, isRoot: false });
               }
             } else {
               if (nodeIdx.has(id)) return;
               nodeIdx.set(id, nodeArr.length);
-              nodeArr.push({ id, name: id, pkgName: id, depth: d, version: packages[id]?.version ?? '', dev: packages[id]?.dev ?? false, isConflict: false, isRoot: packages[id]?.isRoot ?? false });
+              nodeArr.push({ id, name: id, pkgName: id, pkgDepth: d, version: packages[id]?.version ?? '', dev: packages[id]?.dev ?? false, isConflict: false, isRoot: packages[id]?.isRoot ?? false });
             }
           });
 
-        // Build links — use each node's actual Sankey depth (node.depth) for the
-        // forward-only check so path-based conflict depths are compared correctly.
+        // Build links — compare each node's pkgDepth (our own field, not d3-sankey's
+        // internal depth) so the forward-only check survives layout reassignment.
         const linkMap = new Map();
         const addLink = (srcId, tgtId) => {
           if (!nodeIdx.has(srcId) || !nodeIdx.has(tgtId)) return;
@@ -410,7 +445,7 @@
         };
 
         for (const node of nodeArr) {
-          const srcDepth = node.depth;
+          const srcDepth = node.pkgDepth;
           if (srcDepth >= effectiveMax) continue;
 
           let fromPath, deps;
@@ -444,7 +479,7 @@
             }
 
             if (!nodeIdx.has(targetNodeId)) continue;
-            const targetDepth = nodeArr[nodeIdx.get(targetNodeId)].depth;
+            const targetDepth = nodeArr[nodeIdx.get(targetNodeId)].pkgDepth;
             if (targetDepth <= srcDepth) continue; // Sankey must flow forward
 
             addLink(node.id, targetNodeId);
@@ -480,7 +515,7 @@
         const layout = createSankey()
           .nodeWidth(14)
           .nodePadding(7)
-          .nodeAlign(d => d.depth)
+          .nodeAlign(d => d.pkgDepth - 1)
           .extent([[12, 12], [W - 12, H - 12]]);
 
         // d3-sankey mutates its inputs — pass clones
@@ -543,7 +578,7 @@
                 ${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ''}
               </div>
               ${d.version ? `<div style="color:#64748b;font-size:11px;margin-bottom:6px">v${d.version}</div>` : ''}
-              <div style="color:#64748b">Depth <span style="color:#94a3b8">${d.depth}</span></div>
+              <div style="color:#64748b">Depth <span style="color:#94a3b8">${d.pkgDepth}</span></div>
               <div style="color:#64748b">Used by <span style="color:#94a3b8">${into}</span> pkg${into !== 1 ? 's' : ''}</div>
               <div style="color:#64748b">Requires <span style="color:#94a3b8">${out}</span> pkg${out !== 1 ? 's' : ''}</div>
               ${onNodeClick ? '<div style="color:#475569;margin-top:4px;font-size:10px">Click to isolate</div>' : ''}
@@ -562,12 +597,13 @@
       ───────────────────────────────────────────────────────────── */
       class PkgLockVisualizer extends LitElement {
         static properties = {
-          _phase:    { state: true },
-          _data:     { state: true },
-          _maxDepth: { state: true },
-          _filter:   { state: true },
-          _focusPkg: { state: true },
-          _error:    { state: true },
+          _phase:     { state: true },
+          _data:      { state: true },
+          _maxDepth:  { state: true },
+          _filter:    { state: true },
+          _focusPkg:  { state: true },
+          _peerDeps:  { state: true },
+          _error:     { state: true },
         };
 
         createRenderRoot() { return this; }
@@ -579,6 +615,7 @@
           this._maxDepth = 3;
           this._filter   = 'all';
           this._focusPkg = null;
+          this._peerDeps = false;
           this._error    = '';
         }
 
@@ -631,7 +668,7 @@
           const conflictSet = new Set((this._data.duplicates ?? []).map(d => d.name));
           const sankeyData = buildSankeyData(
             this._data.packages, this._data.name, this._maxDepth,
-            { filter: this._filter, conflictSet, pathIndex: this._data.pathIndex ?? new Map(), focusPkg: this._focusPkg }
+            { filter: this._filter, conflictSet, pathIndex: this._data.pathIndex ?? new Map(), focusPkg: this._focusPkg, includePeerDeps: this._peerDeps }
           );
           renderSankey(container, sankeyData, {
             onNodeClick: (pkgName) => {
@@ -663,6 +700,7 @@
           this._data     = null;
           this._filter   = 'all';
           this._focusPkg = null;
+          this._peerDeps = false;
           this._error    = '';
           document.title = 'Package Lock Visualizer';
           hideTip();
@@ -777,6 +815,18 @@
                         ` : ''}
                       </select>
                     </div>
+
+                    <div class="w-px h-4 bg-slate-700"></div>
+
+                    <label class="flex items-center gap-1.5 text-sm text-slate-400 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        .checked=${this._peerDeps}
+                        @change=${(e) => { this._peerDeps = e.target.checked; this.updateComplete.then(() => this._draw()); }}
+                        class="accent-blue-500 cursor-pointer"
+                      />
+                      Peer deps
+                    </label>
 
                     ${this._focusPkg ? html`
                       <div class="flex items-center gap-2 text-sm bg-blue-900/40 border border-blue-700/50 rounded px-3 py-1">

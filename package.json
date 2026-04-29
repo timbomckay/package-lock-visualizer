@@ -1,0 +1,31 @@
+{
+  "name": "openapi-tanstack-starter",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "typecheck": "tsc --noEmit",
+    "format": "oxfmt .",
+    "format:check": "oxfmt . --check",
+    "lint": "oxlint .",
+    "api:generate": "openapi-ts"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@tanstack/router-plugin": "^1.0.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "oxfmt --write",
+      "oxlint"
+    ],
+    "*.{js,mjs,cjs,json,css,html}": "oxfmt --write"
+  }
+}
