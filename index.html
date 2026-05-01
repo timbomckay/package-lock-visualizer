@@ -1,761 +1,826 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Package Lock Visualizer</title>
 
-    <!-- Tailwind CSS v4 CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Package Lock Visualizer</title>
 
-    <!-- Import map: Lit + D3 + d3-sankey via ESM -->
-    <script type="importmap">
+  <!-- Tailwind CSS v4 CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+  <!-- Import map: Lit + D3 + d3-sankey via ESM -->
+  <script type="importmap">
       {
         "imports": {
-          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit": "https://cdn.jsdelivr.net/npm/lit@3/+esm",
           "d3": "https://cdn.jsdelivr.net/npm/d3@7/+esm",
-          "d3-sankey": "https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/+esm"
+          "d3-sankey": "https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/+esm",
+          "semver": "https://cdn.jsdelivr.net/npm/semver@7/+esm"
         }
       }
     </script>
 
-    <style>
-      body {
-        background: #0f172a;
-        font-family: system-ui, sans-serif;
-      }
+  <style>
+    body {
+      background: #0f172a;
+      font-family: system-ui, sans-serif;
+    }
 
-      .drop-zone {
-        transition: border-color 0.2s, background 0.2s;
-      }
-      .drop-zone.drag-over {
-        border-color: #3b82f6 !important;
-        background: rgba(59, 130, 246, 0.06);
-      }
+    .drop-zone {
+      transition: border-color 0.2s, background 0.2s;
+    }
 
-      .sankey-link {
-        fill: none;
-        stroke-opacity: 0.22;
-        transition: stroke-opacity 0.15s;
-      }
-      .sankey-link:hover {
-        stroke-opacity: 0.65;
-      }
+    .drop-zone.drag-over {
+      border-color: #3b82f6 !important;
+      background: rgba(59, 130, 246, 0.06);
+    }
 
-      #sankey-tooltip {
-        position: fixed;
-        background: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 6px;
-        padding: 8px 12px;
-        font-size: 12px;
-        line-height: 1.6;
-        color: #e2e8f0;
-        pointer-events: none;
-        z-index: 200;
-        max-width: 280px;
-        display: none;
-      }
-    </style>
-  </head>
+    .sankey-link {
+      fill: none;
+      stroke-opacity: 0.22;
+      transition: stroke-opacity 0.15s;
+    }
 
-  <body class="text-slate-100">
-    <pkg-lock-visualizer></pkg-lock-visualizer>
-    <div id="sankey-tooltip"></div>
+    .sankey-link:hover {
+      stroke-opacity: 0.65;
+    }
 
-    <script type="module">
-      import { LitElement, html } from 'lit';
-      import * as d3 from 'd3';
-      import { sankey as createSankey, sankeyLinkHorizontal } from 'd3-sankey';
+    #sankey-tooltip {
+      position: fixed;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: #e2e8f0;
+      pointer-events: none;
+      z-index: 200;
+      max-width: 280px;
+      display: none;
+    }
+  </style>
+</head>
 
-      /* ── Depth color scale ──────────────────────────────────────── */
-      const DEPTH_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#f97316', '#ef4444'];
-      const depthColor = (d) => d.isConflict ? '#f59e0b' : DEPTH_COLORS[Math.min(d.pkgDepth ?? 0, DEPTH_COLORS.length - 1)];
+<body class="text-slate-100">
+  <pkg-lock-visualizer></pkg-lock-visualizer>
+  <div id="sankey-tooltip"></div>
 
-      /* ── Tooltip helpers ────────────────────────────────────────── */
-      const $tip = () => document.getElementById('sankey-tooltip');
-      function showTip(event, markup) {
-        const t = $tip();
-        t.innerHTML = markup;
-        t.style.display = 'block';
-        t.style.left = event.clientX + 14 + 'px';
-        t.style.top  = event.clientY - 8  + 'px';
-      }
-      function hideTip() { $tip().style.display = 'none'; }
+  <script type="module">
+    import { LitElement, html } from 'lit';
+    import * as d3 from 'd3';
+    import { sankey as createSankey, sankeyLinkHorizontal } from 'd3-sankey';
 
-      /* ─────────────────────────────────────────────────────────────
-         parseLockfile
-         Supports lockfileVersion 1 (recursive dependencies) and
-         v2/v3 (flat packages map). Returns { name, lockfileVersion, packages }
-         where packages[name] = { version, deps[], dev, isRoot }.
-      ───────────────────────────────────────────────────────────── */
-      function parseLockfile(json) {
-        const name = json.name || 'root';
-        const lockfileVersion = json.lockfileVersion ?? 1;
-        const packages = {};
+    /* ── Depth color scale ──────────────────────────────────────── */
+    const DEPTH_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#f97316', '#ef4444'];
+    const depthColor = (d) => d.isConflict ? '#c026d3' : DEPTH_COLORS[Math.min(d.pkgDepth ?? 0, DEPTH_COLORS.length - 1)];
 
-        const versionsSeen = new Map(); // pkgName → Set<version>
-        const pathIndex   = new Map(); // path → { name, version }
+    /* ── Tooltip helpers ────────────────────────────────────────── */
+    const $tip = () => document.getElementById('sankey-tooltip');
+    function showTip(event, markup) {
+      const t = $tip();
+      t.innerHTML = markup;
+      t.style.display = 'block';
+      t.style.left = event.clientX + 14 + 'px';
+      t.style.top = event.clientY - 8 + 'px';
+    }
+    function hideTip() { $tip().style.display = 'none'; }
 
-        if (lockfileVersion >= 2 && json.packages) {
-          for (const [path, info] of Object.entries(json.packages)) {
-            if (path === '') {
-              // Root package — include runtime + dev deps
-              packages[name] = {
-                version: json.version || '',
-                deps: [
-                  ...Object.keys(info.dependencies    || {}),
-                  ...Object.keys(info.devDependencies || {}),
-                ],
-                isRoot: true,
-                dev: false,
-              };
-            } else {
-              // Extract package name from the last node_modules/xxx segment
-              const pkgName = path.split('node_modules/').at(-1);
-              const ver = info.version || '';
-              if (!versionsSeen.has(pkgName)) versionsSeen.set(pkgName, new Set());
-              versionsSeen.get(pkgName).add(ver);
-              const deps     = Object.keys({ ...(info.dependencies || {}), ...(info.optionalDependencies || {}) });
-              const peerDeps = Object.keys(info.peerDependencies || {});
-              pathIndex.set(path, { name: pkgName, version: ver, deps, peerDeps });
-              if (!packages[pkgName]) {
-                packages[pkgName] = { version: ver, deps, peerDeps, dev: info.dev || false, isRoot: false };
-              }
+    /* ─────────────────────────────────────────────────────────────
+       parseLockfile
+       Supports lockfileVersion 1 (recursive dependencies) and
+       v2/v3 (flat packages map). Returns { name, lockfileVersion, packages }
+       where packages[name] = { version, deps[], dev, isRoot }.
+    ───────────────────────────────────────────────────────────── */
+    function parseLockfile(json) {
+      const name = json.name || 'root';
+      const lockfileVersion = json.lockfileVersion ?? 1;
+      const packages = {};
+
+      const versionsSeen = new Map(); // pkgName → Set<version>
+      const pathIndex = new Map(); // path → { name, version }
+
+      if (lockfileVersion >= 2 && json.packages) {
+        for (const [path, info] of Object.entries(json.packages)) {
+          if (path === '') {
+            // Root package — include runtime + dev deps
+            packages[name] = {
+              version: json.version || '',
+              deps: [
+                ...Object.keys(info.dependencies || {}),
+                ...Object.keys(info.devDependencies || {}),
+              ],
+              isRoot: true,
+              dev: false,
+            };
+          } else {
+            // Extract package name from the last node_modules/xxx segment
+            const pkgName = path.split('node_modules/').at(-1);
+            const ver = info.version || '';
+            if (!versionsSeen.has(pkgName)) versionsSeen.set(pkgName, new Set());
+            versionsSeen.get(pkgName).add(ver);
+            const deps = Object.keys({ ...(info.dependencies || {}), ...(info.optionalDependencies || {}) });
+            const peerDeps = Object.keys(info.peerDependencies || {});
+            pathIndex.set(path, { name: pkgName, version: ver, deps, peerDeps });
+            if (!packages[pkgName]) {
+              packages[pkgName] = { version: ver, deps, peerDeps, dev: info.dev || false, isRoot: false };
             }
           }
-        } else if (json.dependencies) {
-          // v1 — recursive nested structure
-          packages[name] = {
-            version: json.version || '',
-            deps: Object.keys(json.dependencies),
-            isRoot: true,
-            dev: false,
-          };
-
-          const flattenV1 = (deps) => {
-            for (const [pkgName, info] of Object.entries(deps || {})) {
-              if (!packages[pkgName]) {
-                packages[pkgName] = {
-                  version: info.version || '',
-                  deps: Object.keys(info.requires || {}),
-                  dev: info.dev || false,
-                  isRoot: false,
-                };
-              }
-              if (info.dependencies) flattenV1(info.dependencies);
-            }
-          };
-          flattenV1(json.dependencies);
         }
+      } else if (json.dependencies) {
+        // v1 — recursive nested structure
+        packages[name] = {
+          version: json.version || '',
+          deps: Object.keys(json.dependencies),
+          isRoot: true,
+          dev: false,
+        };
 
-        // uniqueCount = distinct package names; pathCount = total installed paths
-        // (pathCount matches Object.keys(json.packages).length - 1 for v2/v3)
-        const uniqueCount = Object.keys(packages).filter(k => !packages[k].isRoot).length;
-        const pathCount = pathIndex.size; // one entry per install path
-        const installedCount = uniqueCount;
-
-        // Packages installed at multiple paths (version conflicts)
-        // Only packages with 2+ *distinct* versions are true conflicts
-        const duplicates = [...versionsSeen.entries()]
-          .filter(([, vers]) => vers.size > 1)
-          .map(([pkgName, vers]) => ({ name: pkgName, versions: [...vers], count: vers.size }))
-          .sort((a, b) => b.count - a.count);
-
-        return { name, lockfileVersion, packages, installedCount, pathCount, duplicates, pathIndex };
+        const flattenV1 = (deps) => {
+          for (const [pkgName, info] of Object.entries(deps || {})) {
+            if (!packages[pkgName]) {
+              packages[pkgName] = {
+                version: info.version || '',
+                deps: Object.keys(info.requires || {}),
+                dev: info.dev || false,
+                isRoot: false,
+              };
+            }
+            if (info.dependencies) flattenV1(info.dependencies);
+          }
+        };
+        flattenV1(json.dependencies);
       }
 
-      /* ─────────────────────────────────────────────────────────────
-         computeDepths
-         BFS shortest-path depth via declared dep edges (matches
-         npm ls depth).  incomingCount counts all dependents across
-         the whole graph regardless of depth direction.
-           depth         — { pkgName → min hops from root }
-           incomingCount — { pkgName → # packages that depend on it }
-      ───────────────────────────────────────────────────────────── */
-      function computeDepths(packages, rootName) {
-        const depth = { [rootName]: 0 };
-        const queue = [rootName];
+      // uniqueCount = distinct package names; pathCount = total installed paths
+      // (pathCount matches Object.keys(json.packages).length - 1 for v2/v3)
+      const uniqueCount = Object.keys(packages).filter(k => !packages[k].isRoot).length;
+      const pathCount = pathIndex.size; // one entry per install path
+      const installedCount = uniqueCount;
+
+      // Packages installed at multiple paths (version conflicts)
+      // Only packages with 2+ *distinct* versions are true conflicts
+      const duplicates = [...versionsSeen.entries()]
+        .filter(([, vers]) => vers.size > 1)
+        .map(([pkgName, vers]) => ({ name: pkgName, versions: [...vers], count: vers.size }))
+        .sort((a, b) => b.count - a.count);
+
+      return { name, lockfileVersion, packages, installedCount, pathCount, duplicates, pathIndex };
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       computeTreeSize
+       BFS count of all unique packages transitively required by
+       pkgName (not counting pkgName itself).
+    ───────────────────────────────────────────────────────────── */
+    function computeTreeSize(pkgName, packages) {
+      const visited = new Set();
+      const queue = [pkgName];
+      while (queue.length) {
+        const curr = queue.shift();
+        for (const dep of packages[curr]?.deps ?? []) {
+          if (dep in packages && !visited.has(dep)) {
+            visited.add(dep);
+            queue.push(dep);
+          }
+        }
+      }
+      return visited.size;
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       computeDepths
+       BFS shortest-path depth via declared dep edges (matches
+       npm ls depth).  incomingCount counts all dependents across
+       the whole graph regardless of depth direction.
+         depth         — { pkgName → min hops from root }
+         incomingCount — { pkgName → # packages that depend on it }
+    ───────────────────────────────────────────────────────────── */
+    function computeDepths(packages, rootName) {
+      const depth = { [rootName]: 0 };
+      const bfsParent = {};
+      const queue = [rootName];
+      while (queue.length) {
+        const curr = queue.shift();
+        for (const dep of packages[curr]?.deps ?? []) {
+          if (dep in packages && !(dep in depth)) {
+            depth[dep] = depth[curr] + 1;
+            bfsParent[dep] = curr;
+            queue.push(dep);
+          }
+        }
+      }
+      const incomingCount = {};
+      for (const pkg of Object.values(packages)) {
+        for (const dep of pkg.deps ?? []) {
+          if (dep in depth) incomingCount[dep] = (incomingCount[dep] ?? 0) + 1;
+        }
+      }
+      return { depth, incomingCount, bfsParent };
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       computeFocusSubgraph
+       Returns the Set of all package names reachable from focusPkg
+       (forward) plus all ancestors that lead to it (reverse BFS).
+    ───────────────────────────────────────────────────────────── */
+    function computeFocusSubgraph(packages, depth, focusPkg, bfsParent, conflictSet = new Set()) {
+      const subgraph = new Set([focusPkg]);
+      // Forward: focusPkg + everything it transitively requires (descendants)
+      const fwd = [focusPkg];
+      while (fwd.length) {
+        const curr = fwd.shift();
+        for (const dep of packages[curr]?.deps ?? []) {
+          if (!subgraph.has(dep) && dep in depth) { subgraph.add(dep); fwd.push(dep); }
+        }
+      }
+      // Backward: for each direct parent of focusPkg, walk BFS parent pointers
+      // back to root. This gives exact ancestor chains without including cousins.
+      const rdeps = {};
+      for (const [name, pkg] of Object.entries(packages)) {
+        for (const dep of pkg.deps ?? []) {
+          if (!rdeps[dep]) rdeps[dep] = [];
+          rdeps[dep].push(name);
+        }
+      }
+      const ancestors = new Set();
+      const addChain = (start) => {
+        let curr = start;
+        while (curr && !ancestors.has(curr)) {
+          ancestors.add(curr);
+          subgraph.add(curr);
+          curr = bfsParent[curr];
+        }
+      };
+      const focusDepth = depth[focusPkg] ?? 0;
+      const depthLimit = focusDepth - 1;
+      for (const directParent of rdeps[focusPkg] ?? []) {
+        if (directParent in depth && depth[directParent] <= depthLimit) addChain(directParent);
+      }
+      return { subgraph, ancestors };
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       computeConflictPaths
+       Reverse-BFS from every conflicting package up through its
+       ancestors — returns the Set of all nodes on any path that
+       leads to a version conflict.
+    ───────────────────────────────────────────────────────────── */
+    function computeConflictPaths(packages, depth, conflictSet) {
+      // Build reverse adjacency map
+      const rdeps = {};
+      for (const [name, pkg] of Object.entries(packages)) {
+        for (const dep of pkg.deps ?? []) {
+          if (!rdeps[dep]) rdeps[dep] = [];
+          rdeps[dep].push(name);
+        }
+      }
+      const onPath = new Set(conflictSet);
+      const queue = [...conflictSet];
+      while (queue.length) {
+        const curr = queue.shift();
+        for (const parent of rdeps[curr] ?? []) {
+          if (!onPath.has(parent) && parent in depth) {
+            onPath.add(parent);
+            queue.push(parent);
+          }
+        }
+      }
+      return onPath;
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       adjustLeafDepths
+       Two-pass depth adjustment:
+         Pass 1 — conflict packages are bumped to max(parent)+1 so
+                  every parent can have a forward link to them.
+         Pass 2 — leaf packages (no outgoing deps) are bumped using
+                  the updated depths from pass 1.
+    ───────────────────────────────────────────────────────────── */
+    function adjustLeafDepths(packages, depth, conflictSet = new Set()) {
+      const parents = {};
+      for (const [name, pkg] of Object.entries(packages)) {
+        for (const dep of pkg.deps ?? []) {
+          if (!parents[dep]) parents[dep] = [];
+          parents[dep].push(name);
+        }
+      }
+      const adjusted = { ...depth };
+      // Pass 1: conflict packages must sit deeper than ALL their parents
+      for (const name of conflictSet) {
+        if (!(name in adjusted)) continue;
+        const pkgParents = (parents[name] ?? []).filter(p => p in adjusted);
+        if (!pkgParents.length) continue;
+        const maxP = Math.max(...pkgParents.map(p => adjusted[p]));
+        adjusted[name] = Math.max(adjusted[name], maxP + 1);
+      }
+      // Pass 2: leaf packages sit right of their deepest parent (uses updated depths from pass 1)
+      for (const [name, d] of Object.entries(adjusted)) {
+        if (conflictSet.has(name)) continue;
+        if ((packages[name]?.deps ?? []).some(dep => dep in adjusted)) continue;
+        const pkgParents = (parents[name] ?? []).filter(p => p in adjusted);
+        if (!pkgParents.length) continue;
+        const maxP = Math.max(...pkgParents.map(p => adjusted[p]));
+        adjusted[name] = Math.max(d, maxP + 1);
+      }
+      return adjusted;
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       buildSankeyData
+       One node per package name (conflict or not). Conflict packages
+       are colored fuchsia; links *into* conflict packages are also
+       fuchsia so the conflict is visible on the incoming edge.
+       filter: 'all' | 'prod' | 'dev' | 'conflicts'
+    ───────────────────────────────────────────────────────────── */
+    function buildSankeyData(packages, rootName, maxDepth = 3, { filter = 'all', conflictSet = new Set(), pathIndex = new Map(), focusPkg = null, includePeerDeps = false } = {}) {
+      const { depth: rawDepth, incomingCount, bfsParent } = computeDepths(packages, rootName);
+      const globalDepth = adjustLeafDepths(packages, rawDepth, conflictSet);
+
+      const conflictPaths = filter === 'conflicts'
+        ? computeConflictPaths(packages, globalDepth, conflictSet)
+        : null;
+
+      const focusResult = focusPkg ? computeFocusSubgraph(packages, globalDepth, focusPkg, bfsParent, conflictSet) : null;
+      const focusSubgraph = focusResult?.subgraph ?? null;
+      const focusAncestors = focusResult?.ancestors ?? null;
+
+      const depth = { ...globalDepth };
+
+      const depthValues = Object.values(depth);
+      const maxActualDepth = depthValues.length > 1 ? Math.max(...depthValues) : 0;
+      let effectiveMax = Math.min(maxDepth, maxActualDepth);
+
+      const pkgIncluded = (id, d) => {
+        if (d < 1 || d > effectiveMax) return false;
+        if (focusSubgraph && !focusSubgraph.has(id)) return false;
+        if (filter === 'prod') return !packages[id]?.dev;
+        if (filter === 'dev') return packages[id]?.dev === true;
+        if (filter === 'conflicts') return conflictPaths.has(id);
+        return true;
+      };
+
+      // In focus mode, re-depth descendants so they sit strictly to the right
+      // of focusPkg. Ancestors keep their global depths.
+      if (focusPkg && focusAncestors) {
+        const baseFocusDepth = depth[focusPkg] ?? 1;
+        const focusBFS = new Map([[focusPkg, 0]]);
+        const queue = [focusPkg];
         while (queue.length) {
           const curr = queue.shift();
+          const hops = focusBFS.get(curr);
           for (const dep of packages[curr]?.deps ?? []) {
-            if (dep in packages && !(dep in depth)) {
-              depth[dep] = depth[curr] + 1;
+            if (!focusBFS.has(dep) && dep in depth) {
+              focusBFS.set(dep, hops + 1);
               queue.push(dep);
             }
           }
         }
-        const incomingCount = {};
-        for (const pkg of Object.values(packages)) {
-          for (const dep of pkg.deps ?? []) {
-            if (dep in depth) incomingCount[dep] = (incomingCount[dep] ?? 0) + 1;
+        for (const [pkg, hops] of focusBFS) {
+          if (hops > 0 && pkg in depth) {
+            depth[pkg] = baseFocusDepth + hops;
           }
         }
-        return { depth, incomingCount };
-      }
-
-      /* ─────────────────────────────────────────────────────────────
-         computeSubgraphLongestPath
-         Topological longest-path depth restricted to a subgraph.
-         Used in focus mode so every rendered edge flows forward
-         (no orphans from globally-shorter paths that aren't visible).
-      ───────────────────────────────────────────────────────────── */
-      function computeSubgraphLongestPath(packages, subgraph, rootName) {
-        const inDeg = {}, children = {};
-        for (const id of subgraph) { inDeg[id] = 0; children[id] = []; }
-        for (const id of subgraph) {
-          for (const dep of packages[id]?.deps ?? []) {
-            if (subgraph.has(dep)) {
-              children[id].push(dep);
-              inDeg[dep]++;
+        // Leaf nodes reachable via multiple parents at different re-depth'd values
+        // must sit right of their deepest parent (same issue as adjustLeafDepths).
+        const focusParentMap = {};
+        for (const name of focusSubgraph) {
+          for (const dep of packages[name]?.deps ?? []) {
+            if (dep in depth && focusSubgraph.has(dep)) {
+              if (!focusParentMap[dep]) focusParentMap[dep] = [];
+              focusParentMap[dep].push(name);
             }
           }
         }
-        const depth = { [rootName]: 0 };
-        const q = [...subgraph].filter(id => inDeg[id] === 0);
-        while (q.length) {
-          const curr = q.shift();
-          for (const dep of children[curr]) {
-            depth[dep] = Math.max(depth[dep] ?? 0, (depth[curr] ?? 0) + 1);
-            if (--inDeg[dep] === 0) q.push(dep);
-          }
+        for (const pkg of focusSubgraph) {
+          if (!(pkg in depth)) continue;
+          const hasDeps = (packages[pkg]?.deps ?? []).some(d => d in depth && focusSubgraph.has(d));
+          if (hasDeps) continue;
+          const parents = focusParentMap[pkg] ?? [];
+          if (!parents.length) continue;
+          const maxParentDepth = Math.max(...parents.map(p => depth[p]));
+          if (depth[pkg] <= maxParentDepth) depth[pkg] = maxParentDepth + 1;
         }
-        return depth;
+        effectiveMax = Math.max(...Object.values(depth));
       }
 
-      /* ─────────────────────────────────────────────────────────────
-         computeFocusSubgraph
-         Returns the Set of all package names reachable from focusPkg
-         (forward) plus all ancestors that lead to it (reverse BFS).
-      ───────────────────────────────────────────────────────────── */
-      function computeFocusSubgraph(packages, depth, focusPkg) {
-        const subgraph = new Set([focusPkg]);
-        // Forward: everything focusPkg transitively requires
-        const fwd = [focusPkg];
-        while (fwd.length) {
-          const curr = fwd.shift();
-          for (const dep of packages[curr]?.deps ?? []) {
-            if (!subgraph.has(dep) && dep in depth) { subgraph.add(dep); fwd.push(dep); }
-          }
-        }
-        // Backward: everything that transitively requires focusPkg
-        const rdeps = {};
-        for (const [name, pkg] of Object.entries(packages)) {
-          for (const dep of pkg.deps ?? []) {
-            if (!rdeps[dep]) rdeps[dep] = [];
-            rdeps[dep].push(name);
-          }
-        }
-        const bwd = [focusPkg];
-        while (bwd.length) {
-          const curr = bwd.shift();
-          for (const parent of rdeps[curr] ?? []) {
-            if (!subgraph.has(parent) && parent in depth) { subgraph.add(parent); bwd.push(parent); }
-          }
-        }
-        return subgraph;
-      }
+      const nodeArr = [];
+      const nodeIdx = new Map();
 
-      /* ─────────────────────────────────────────────────────────────
-         computeConflictPaths
-         Reverse-BFS from every conflicting package up through its
-         ancestors — returns the Set of all nodes on any path that
-         leads to a version conflict.
-      ───────────────────────────────────────────────────────────── */
-      function computeConflictPaths(packages, depth, conflictSet) {
-        // Build reverse adjacency map
-        const rdeps = {};
-        for (const [name, pkg] of Object.entries(packages)) {
-          for (const dep of pkg.deps ?? []) {
-            if (!rdeps[dep]) rdeps[dep] = [];
-            rdeps[dep].push(name);
-          }
-        }
-        const onPath = new Set(conflictSet);
-        const queue = [...conflictSet];
-        while (queue.length) {
-          const curr = queue.shift();
-          for (const parent of rdeps[curr] ?? []) {
-            if (!onPath.has(parent) && parent in depth) {
-              onPath.add(parent);
-              queue.push(parent);
-            }
-          }
-        }
-        return onPath;
-      }
-
-      /* ─────────────────────────────────────────────────────────────
-         resolveDepVersion
-         Given a package's install path and a dependency name, walks
-         up the node_modules nesting to find which version npm resolved
-         to — mirrors node's require() resolution order.
-      ───────────────────────────────────────────────────────────── */
-      function resolveDepVersion(fromPath, depName, pathIndex) {
-        let prefix = fromPath;
-        while (prefix) {
-          const candidate = `${prefix}/node_modules/${depName}`;
-          if (pathIndex.has(candidate)) return pathIndex.get(candidate).version;
-          const sep = prefix.lastIndexOf('/node_modules/');
-          if (sep === -1) break;
-          prefix = prefix.slice(0, sep);
-        }
-        return pathIndex.get(`node_modules/${depName}`)?.version ?? null;
-      }
-
-      // Returns the shallowest (most-hoisted) path for a given package name
-      function primaryPath(pkgName, pathIndex) {
-        let best = null, bestLen = Infinity;
-        for (const [p, e] of pathIndex) {
-          if (e.name === pkgName) {
-            const len = p.split('/').length;
-            if (len < bestLen) { bestLen = len; best = p; }
-          }
-        }
-        return best;
-      }
-
-      /* ─────────────────────────────────────────────────────────────
-         buildSankeyData
-         Unified approach for all filters:
-           - Non-conflict packages → one node, label = package name
-           - Conflict packages     → one node per installed version,
-                                     label = name@version
-         The 'conflicts' filter restricts to ancestor paths of
-         conflicting packages; other filters work the same way.
-         filter: 'all' | 'prod' | 'dev' | 'conflicts'
-      ───────────────────────────────────────────────────────────── */
-      function buildSankeyData(packages, rootName, maxDepth = 3, { filter = 'all', conflictSet = new Set(), pathIndex = new Map(), focusPkg = null, includePeerDeps = false } = {}) {
-        const { depth: globalDepth, incomingCount } = computeDepths(packages, rootName);
-
-        const conflictPaths = filter === 'conflicts'
-          ? computeConflictPaths(packages, globalDepth, conflictSet)
-          : null;
-
-        const focusSubgraph = focusPkg
-          ? computeFocusSubgraph(packages, globalDepth, focusPkg)
-          : null;
-
-        // In focus mode: longest-path within subgraph keeps every visible edge forward.
-        // Otherwise: BFS shortest-path (matches `npm ls` depth intuition).
-        const depth = focusSubgraph
-          ? computeSubgraphLongestPath(packages, focusSubgraph, rootName)
-          : globalDepth;
-
-        const depthValues = Object.values(depth);
-        const maxActualDepth = depthValues.length > 1 ? Math.max(...depthValues) : 0;
-        const effectiveMax = Math.min(maxDepth, maxActualDepth);
-
-        // Collect all distinct installed versions per conflict package
-        const versionMap = new Map(); // pkgName → Map(version → nodeId)
-        for (const pkgName of conflictSet) {
-          const vmap = new Map();
-          for (const e of pathIndex.values()) {
-            if (e.name === pkgName) vmap.set(e.version, `${pkgName}@${e.version}`);
-          }
-          if (vmap.size > 0) versionMap.set(pkgName, vmap);
-        }
-
-        const pkgIncluded = (id, d) => {
-          if (d < 1 || d > effectiveMax) return false;
-          if (focusSubgraph && !focusSubgraph.has(id)) return false;
-          if (filter === 'prod')      return !packages[id]?.dev;
-          if (filter === 'dev')       return  packages[id]?.dev === true;
-          if (filter === 'conflicts') return  conflictPaths.has(id);
-          return true;
-        };
-
-        // Shallowest install path per non-conflict package
-        const pkgPrimaryPath = new Map();
-        for (const id of Object.keys(packages)) {
-          if (!conflictSet.has(id) && id !== rootName) pkgPrimaryPath.set(id, primaryPath(id, pathIndex));
-        }
-
-        // Shallowest install path per conflict version node — built BEFORE nodes
-        // so we can assign path-based depth when building nodes.
-        const versionPrimaryPath = new Map(); // nodeId → install path
-        for (const [pkgName, vmap] of versionMap) {
-          for (const [ver, nodeId] of vmap) {
-            let best = null, bestLen = Infinity;
-            for (const [p, e] of pathIndex) {
-              if (e.name === pkgName && e.version === ver) {
-                const len = p.split('/').length;
-                if (len < bestLen) { bestLen = len; best = p; }
-              }
-            }
-            if (best) versionPrimaryPath.set(nodeId, best);
-          }
-        }
-
-        // Per-version depth: max(parent depth that resolves to this version) + 1.
-        // Different versions of the same conflict package end up at different
-        // columns based on who actually requires them, so links never go backward.
-        const conflictVersionDepth = new Map(); // nodeId → depth
-        for (const [pkgName, vmap] of versionMap) {
-          for (const [ver, nodeId] of vmap) {
-            let maxParentDepth = -1;
-            for (const [parentPath, parentEntry] of pathIndex) {
-              const pdeps = [...(parentEntry.deps ?? []), ...(includePeerDeps ? (parentEntry.peerDeps ?? []) : [])];
-              if (!pdeps.includes(pkgName)) continue;
-              if (resolveDepVersion(parentPath, pkgName, pathIndex) !== ver) continue;
-              const parentPkgName = parentPath === '' ? rootName : parentEntry.name;
-              const pd = depth[parentPkgName];
-              if (pd !== undefined && pd > maxParentDepth) maxParentDepth = pd;
-            }
-            conflictVersionDepth.set(nodeId, maxParentDepth >= 0 ? maxParentDepth + 1 : (depth[pkgName] ?? 1));
-          }
-        }
-
-        // Build nodes — conflict version nodes use path-based depth so that
-        // e.g. node_modules/@tanstack/router-plugin/node_modules/zod gets
-        // depth 2 (not BFS depth 1), allowing forward links from router-plugin.
-        const nodeArr = [];
-        const nodeIdx = new Map();
-
-        Object.entries(depth)
-          .filter(([id, d]) => pkgIncluded(id, d))
-          .sort(([a, da], [b, db]) => da !== db ? da - db : (incomingCount[b] ?? 0) - (incomingCount[a] ?? 0))
-          .forEach(([id, d]) => {
-            if (conflictSet.has(id)) {
-              const vmap = versionMap.get(id);
-              if (!vmap) return;
-              for (const [ver, nodeId] of vmap) {
-                if (nodeIdx.has(nodeId)) continue;
-                const vDepth = conflictVersionDepth.get(nodeId) ?? d;
-                if (vDepth < 1 || vDepth > effectiveMax) continue;
-                nodeIdx.set(nodeId, nodeArr.length);
-                nodeArr.push({ id: nodeId, name: `${id}@${ver}`, pkgName: id, pkgDepth: vDepth, version: ver, dev: packages[id]?.dev ?? false, isConflict: true, isRoot: false });
-              }
-            } else {
-              if (nodeIdx.has(id)) return;
-              nodeIdx.set(id, nodeArr.length);
-              nodeArr.push({ id, name: id, pkgName: id, pkgDepth: d, version: packages[id]?.version ?? '', dev: packages[id]?.dev ?? false, isConflict: false, isRoot: packages[id]?.isRoot ?? false });
-            }
-          });
-
-        // Build links — compare each node's pkgDepth (our own field, not d3-sankey's
-        // internal depth) so the forward-only check survives layout reassignment.
-        const linkMap = new Map();
-        const addLink = (srcId, tgtId) => {
-          if (!nodeIdx.has(srcId) || !nodeIdx.has(tgtId)) return;
-          const key = `${srcId}→${tgtId}`;
-          const ex = linkMap.get(key);
-          if (ex) ex.value += 1;
-          else linkMap.set(key, { source: nodeIdx.get(srcId), target: nodeIdx.get(tgtId), value: 1 });
-        };
-
-        for (const node of nodeArr) {
-          const srcDepth = node.pkgDepth;
-          if (srcDepth >= effectiveMax) continue;
-
-          let fromPath, deps;
-          if (node.isConflict) {
-            const vPath = versionPrimaryPath.get(node.id);
-            if (!vPath) continue;
-            fromPath = vPath;
-            const entry = pathIndex.get(vPath);
-            deps = [...(entry?.deps ?? []), ...(includePeerDeps ? (entry?.peerDeps ?? []) : [])];
-          } else {
-            const pn = node.pkgName;
-            fromPath = pn === rootName ? '' : (pkgPrimaryPath.get(pn) ?? `node_modules/${pn}`);
-            const pkg = packages[pn];
-            deps = [...(pkg?.deps ?? []), ...(includePeerDeps ? (pkg?.peerDeps ?? []) : [])];
-          }
-
-          for (const dep of deps) {
-            if (!(dep in depth)) continue;
-
-            let targetNodeId;
-            if (conflictSet.has(dep)) {
-              const resolvedVer = resolveDepVersion(fromPath, dep, pathIndex);
-              const vmap = versionMap.get(dep);
-              if (!vmap) continue;
-              targetNodeId = (resolvedVer && vmap.has(resolvedVer))
-                ? vmap.get(resolvedVer)
-                : [...vmap.values()][0];
-            } else {
-              if (!pkgIncluded(dep, depth[dep] ?? 0)) continue;
-              targetNodeId = dep;
-            }
-
-            if (!nodeIdx.has(targetNodeId)) continue;
-            const targetDepth = nodeArr[nodeIdx.get(targetNodeId)].pkgDepth;
-            if (targetDepth <= srcDepth) continue; // Sankey must flow forward
-
-            addLink(node.id, targetNodeId);
-          }
-        }
-
-        return { nodes: nodeArr, links: [...linkMap.values()], effectiveMax, maxActualDepth };
-      }
-
-      /* ─────────────────────────────────────────────────────────────
-         renderSankey
-         Draws D3 Sankey into the given container element.
-      ───────────────────────────────────────────────────────────── */
-      function renderSankey(container, sankeyData, { onNodeClick } = {}) {
-        container.innerHTML = '';
-        const { nodes: rawNodes, links: rawLinks, effectiveMax } = sankeyData;
-
-        if (!rawNodes.length || !rawLinks.length) {
-          container.innerHTML =
-            '<p style="color:#475569;padding:3rem;text-align:center">Not enough linked dependency data to render a Sankey diagram.</p>';
-          return;
-        }
-
-        const W = Math.max(container.clientWidth || 900, 600);
-        const H = Math.max(640, rawNodes.length * 22 + 60);
-
-        const svg = d3.select(container)
-          .append('svg')
-          .attr('width', W)
-          .attr('height', H)
-          .style('font-family', 'system-ui, sans-serif');
-
-        const layout = createSankey()
-          .nodeWidth(14)
-          .nodePadding(7)
-          .nodeAlign(d => d.pkgDepth - 1)
-          .extent([[12, 12], [W - 12, H - 12]]);
-
-        // d3-sankey mutates its inputs — pass clones
-        const graph = layout({
-          nodes: rawNodes.map(d => ({ ...d })),
-          links: rawLinks.map(d => ({ ...d })),
+      Object.entries(depth)
+        .filter(([id, d]) => pkgIncluded(id, d))
+        .sort(([a, da], [b, db]) => da !== db ? da - db : (incomingCount[b] ?? 0) - (incomingCount[a] ?? 0))
+        .forEach(([id, d]) => {
+          if (nodeIdx.has(id)) return;
+          const isConflict = conflictSet.has(id);
+          const versions = isConflict
+            ? [...new Set([...pathIndex.values()].filter(e => e.name === id).map(e => e.version))]
+            : null;
+          nodeIdx.set(id, nodeArr.length);
+          nodeArr.push({ id, name: id, pkgName: id, pkgDepth: d, version: packages[id]?.version ?? '', versions, dev: packages[id]?.dev ?? false, isConflict, isRoot: packages[id]?.isRoot ?? false, treeSize: computeTreeSize(id, packages) });
         });
 
-        /* Links */
-        svg.append('g')
-          .selectAll('path')
-          .data(graph.links)
-          .join('path')
-          .attr('class', 'sankey-link')
-          .attr('d', sankeyLinkHorizontal())
-          .attr('stroke', d => depthColor(d.target))
-          .attr('stroke-width', d => Math.max(1, d.width))
-          .on('mousemove', (ev, d) =>
-            showTip(ev, `<span style="color:#94a3b8">${d.source.name}</span>
-              <span style="color:#475569"> → </span>
-              <span style="color:#94a3b8">${d.target.name}</span>`)
-          )
-          .on('mouseleave', hideTip);
+      // Build links — compare each node's pkgDepth (our own field, not d3-sankey's
+      // internal depth) so the forward-only check survives layout reassignment.
+      const linkMap = new Map();
+      const addLink = (srcId, tgtId, isConflict = false) => {
+        if (!nodeIdx.has(srcId) || !nodeIdx.has(tgtId)) return;
+        const key = `${srcId}→${tgtId}`;
+        const ex = linkMap.get(key);
+        if (ex) { ex.value += 1; if (isConflict) ex.isConflict = true; }
+        else linkMap.set(key, { source: nodeIdx.get(srcId), target: nodeIdx.get(tgtId), value: 1, isConflict });
+      };
 
-        /* Node groups */
-        const nodeG = svg.append('g')
-          .selectAll('g')
-          .data(graph.nodes)
-          .join('g')
-          .attr('transform', d => `translate(${d.x0},${d.y0})`);
+      for (const node of nodeArr) {
+        const srcDepth = node.pkgDepth;
+        if (srcDepth >= effectiveMax) continue;
 
-        /* Rects */
-        nodeG.append('rect')
-          .attr('height', d => Math.max(2, d.y1 - d.y0))
-          .attr('width',  d => d.x1 - d.x0)
-          .attr('fill',   d => depthColor(d))
-          .attr('rx', 2);
+        const pkg = packages[node.pkgName];
+        const deps = [...(pkg?.deps ?? []), ...(includePeerDeps ? (pkg?.peerDeps ?? []) : [])];
 
-        /* Labels */
-        nodeG.append('text')
-          .attr('x', d => d.x0 < W / 2 ? (d.x1 - d.x0) + 6 : -6)
-          .attr('y', d => (d.y1 - d.y0) / 2)
-          .attr('dy', '0.35em')
-          .attr('text-anchor', d => d.x0 < W / 2 ? 'start' : 'end')
-          .attr('fill', '#cbd5e1')
-          .attr('font-size', 11)
+        for (const dep of deps) {
+          if (!(dep in depth)) continue;
+          if (!pkgIncluded(dep, depth[dep] ?? 0)) continue;
+          if (!nodeIdx.has(dep)) continue;
+
+          const targetDepth = nodeArr[nodeIdx.get(dep)].pkgDepth;
+          if (targetDepth <= srcDepth) continue; // Sankey must flow forward
+
+          // Ancestor nodes may only link to focusPkg or other ancestors —
+          // not to packages that are descendants of focusPkg.
+          if (focusAncestors && focusAncestors.has(node.pkgName)) {
+            const tgtPkgName = nodeArr[nodeIdx.get(dep)]?.pkgName;
+            if (tgtPkgName !== focusPkg && !focusAncestors.has(tgtPkgName)) continue;
+          }
+
+          addLink(node.id, dep, conflictSet.has(dep));
+        }
+      }
+
+      return { nodes: nodeArr, links: [...linkMap.values()], effectiveMax, maxActualDepth };
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       renderSankey
+       Draws D3 Sankey into the given container element.
+    ───────────────────────────────────────────────────────────── */
+    function renderSankey(container, sankeyData, { onNodeClick } = {}) {
+      container.innerHTML = '';
+      const { nodes: rawNodes, links: rawLinks, effectiveMax } = sankeyData;
+
+      if (!rawNodes.length) {
+        container.innerHTML =
+          '<p style="color:#475569;padding:3rem;text-align:center">Not enough linked dependency data to render a Sankey diagram.</p>';
+        return;
+      }
+
+      // No links (e.g. depth=1): render nodes as a simple labelled list
+      if (!rawLinks.length) {
+        const W = Math.max(container.clientWidth || 900, 600);
+        const rowH = 28, gap = 5;
+        const H = Math.max(200, rawNodes.length * (rowH + gap) + 40);
+        const svg = d3.select(container)
+          .append('svg').attr('width', W).attr('height', H)
+          .style('font-family', 'system-ui, sans-serif');
+        const groups = svg.append('g').selectAll('g').data(rawNodes).join('g')
+          .attr('transform', (d, i) => `translate(12, ${20 + i * (rowH + gap)})`)
+          .style('cursor', onNodeClick ? 'pointer' : 'default')
+          .on('mousemove', (ev, d) => showTip(ev, `
+              <div style="font-weight:600;color:#f1f5f9">${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ''}</div>
+              ${d.version ? `<div style="color:#64748b;font-size:11px">v${d.version}</div>` : ''}
+              ${onNodeClick ? '<div style="color:#475569;margin-top:4px;font-size:10px">Click to isolate</div>' : ''}
+            `))
+          .on('mouseleave', hideTip)
+          .on('click', (ev, d) => { ev.stopPropagation(); hideTip(); onNodeClick?.(d.pkgName); });
+        groups.append('rect')
+          .attr('width', 14).attr('height', rowH).attr('fill', d => depthColor(d)).attr('rx', 2);
+        groups.append('text')
+          .attr('x', 22).attr('y', rowH / 2).attr('dy', '0.35em')
+          .attr('fill', '#cbd5e1').attr('font-size', 13)
           .text(d => {
             const label = d.isRoot ? `${d.name} (root)` : d.name;
-            return label.length > 32 ? label.slice(0, 30) + '…' : label;
+            return label.length > 60 ? label.slice(0, 58) + '…' : label;
           });
+        return;
+      }
 
-        /* Node tooltips + click-to-focus */
-        nodeG
-          .style('cursor', onNodeClick ? 'pointer' : 'default')
-          .on('mousemove', (ev, d) => {
-            const into = d.targetLinks?.length ?? 0;
-            const out  = d.sourceLinks?.length ?? 0;
-            showTip(ev, `
+      const W = Math.max(container.clientWidth || 900, 600);
+      const H = Math.max(640, rawNodes.length * 22 + 60);
+
+      const svg = d3.select(container)
+        .append('svg')
+        .attr('width', W)
+        .attr('height', H)
+        .style('font-family', 'system-ui, sans-serif');
+
+      const layout = createSankey()
+        .nodeWidth(14)
+        .nodePadding(7)
+        .nodeAlign(d => d.pkgDepth - 1)
+        .extent([[12, 12], [W - 12, H - 12]]);
+
+      // d3-sankey mutates its inputs — pass clones
+      const graph = layout({
+        nodes: rawNodes.map(d => ({ ...d })),
+        links: rawLinks.map(d => ({ ...d })),
+      });
+
+      /* Links */
+      svg.append('g')
+        .selectAll('path')
+        .data(graph.links)
+        .join('path')
+        .attr('class', 'sankey-link')
+        .attr('d', sankeyLinkHorizontal())
+        .attr('stroke', d => d.isConflict ? '#c026d3' : depthColor(d.source))
+        .attr('stroke-width', d => Math.max(1, d.width))
+        .on('mousemove', (ev, d) =>
+          showTip(ev, `<span style="color:#94a3b8">${d.source.name}</span>
+              <span style="color:#475569"> → </span>
+              <span style="color:#94a3b8">${d.target.name}</span>`)
+        )
+        .on('mouseleave', hideTip);
+
+      /* Node groups */
+      const nodeG = svg.append('g')
+        .selectAll('g')
+        .data(graph.nodes)
+        .join('g')
+        .attr('transform', d => `translate(${d.x0},${d.y0})`);
+
+      /* Rects */
+      nodeG.append('rect')
+        .attr('height', d => Math.max(2, d.y1 - d.y0))
+        .attr('width', d => d.x1 - d.x0)
+        .attr('fill', d => depthColor(d))
+        .attr('rx', 2);
+
+      /* Labels */
+      nodeG.append('text')
+        .attr('x', d => d.x0 < W / 2 ? (d.x1 - d.x0) + 6 : -6)
+        .attr('y', d => (d.y1 - d.y0) / 2)
+        .attr('dy', '0.35em')
+        .attr('text-anchor', d => d.x0 < W / 2 ? 'start' : 'end')
+        .attr('fill', '#cbd5e1')
+        .attr('font-size', 11)
+        .text(d => {
+          const label = d.isRoot ? `${d.name} (root)` : d.name;
+          return label.length > 32 ? label.slice(0, 30) + '…' : label;
+        });
+
+      /* Node tooltips + click-to-focus */
+      nodeG
+        .style('cursor', onNodeClick ? 'pointer' : 'default')
+        .on('mousemove', (ev, d) => {
+          const into = d.targetLinks?.length ?? 0;
+          const tree = d.treeSize ?? 0;
+          showTip(ev, `
               <div style="font-weight:600;color:#f1f5f9;margin-bottom:2px">
                 ${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ''}
               </div>
-              ${d.version ? `<div style="color:#64748b;font-size:11px;margin-bottom:6px">v${d.version}</div>` : ''}
+              ${d.versions
+              ? `<div style="color:#c026d3;font-size:11px;margin-bottom:6px">${d.versions.length} versions: ${d.versions.join(', ')}</div>`
+              : (d.version ? `<div style="color:#64748b;font-size:11px;margin-bottom:6px">v${d.version}</div>` : '')}
               <div style="color:#64748b">Depth <span style="color:#94a3b8">${d.pkgDepth}</span></div>
               <div style="color:#64748b">Used by <span style="color:#94a3b8">${into}</span> pkg${into !== 1 ? 's' : ''}</div>
-              <div style="color:#64748b">Requires <span style="color:#94a3b8">${out}</span> pkg${out !== 1 ? 's' : ''}</div>
+              <div style="color:#64748b">Tree size <span style="color:#94a3b8">${tree}</span> pkg${tree !== 1 ? 's' : ''}</div>
               ${onNodeClick ? '<div style="color:#475569;margin-top:4px;font-size:10px">Click to isolate</div>' : ''}
             `);
-          })
-          .on('mouseleave', hideTip)
-          .on('click', (ev, d) => {
-            ev.stopPropagation();
-            hideTip();
-            onNodeClick?.(d.pkgName);
-          });
+        })
+        .on('mouseleave', hideTip)
+        .on('click', (ev, d) => {
+          ev.stopPropagation();
+          hideTip();
+          onNodeClick?.(d.pkgName);
+        });
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       PkgLockVisualizer — Lit component
+    ───────────────────────────────────────────────────────────── */
+    class PkgLockVisualizer extends LitElement {
+      static properties = {
+        _phase: { state: true },
+        _data: { state: true },
+        _maxDepth: { state: true },
+        _filter: { state: true },
+        _focusPkg: { state: true },
+        _error: { state: true },
+        _search: { state: true },
+        _searchOpen: { state: true },
+      };
+
+      createRenderRoot() { return this; }
+
+      constructor() {
+        super();
+        this._phase = 'idle';
+        this._data = null;
+        this._maxDepth = 3;
+        this._filter = 'all';
+        this._focusPkg = null;
+        this._error = '';
+        this._search = '';
+        this._searchOpen = false;
       }
 
-      /* ─────────────────────────────────────────────────────────────
-         PkgLockVisualizer — Lit component
-      ───────────────────────────────────────────────────────────── */
-      class PkgLockVisualizer extends LitElement {
-        static properties = {
-          _phase:     { state: true },
-          _data:      { state: true },
-          _maxDepth:  { state: true },
-          _filter:    { state: true },
-          _focusPkg:  { state: true },
-          _peerDeps:  { state: true },
-          _error:     { state: true },
-        };
+      /* ── Drag-and-drop ── */
+      _onDragOver(e) {
+        e.preventDefault();
+        this.querySelector('.drop-zone')?.classList.add('drag-over');
+      }
+      _onDragLeave() {
+        this.querySelector('.drop-zone')?.classList.remove('drag-over');
+      }
+      _onDrop(e) {
+        e.preventDefault();
+        this.querySelector('.drop-zone')?.classList.remove('drag-over');
+        this._loadFile(e.dataTransfer?.files?.[0]);
+      }
+      _onFileInput(e) { this._loadFile(e.target.files?.[0]); }
 
-        createRenderRoot() { return this; }
-
-        constructor() {
-          super();
-          this._phase    = 'idle';
-          this._data     = null;
-          this._maxDepth = 3;
-          this._filter   = 'all';
-          this._focusPkg = null;
-          this._peerDeps = false;
-          this._error    = '';
-        }
-
-        /* ── Drag-and-drop ── */
-        _onDragOver(e) {
-          e.preventDefault();
-          this.querySelector('.drop-zone')?.classList.add('drag-over');
-        }
-        _onDragLeave() {
-          this.querySelector('.drop-zone')?.classList.remove('drag-over');
-        }
-        _onDrop(e) {
-          e.preventDefault();
-          this.querySelector('.drop-zone')?.classList.remove('drag-over');
-          this._loadFile(e.dataTransfer?.files?.[0]);
-        }
-        _onFileInput(e) { this._loadFile(e.target.files?.[0]); }
-
-        _loadFile(file) {
-          if (!file) return;
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            try {
-              const json = JSON.parse(e.target.result);
-              if (!json.dependencies && !json.packages) {
-                throw new Error('Missing dependencies/packages field — is this a package-lock.json?');
-              }
-              this._data = parseLockfile(json);
-              const { depth: _d } = computeDepths(this._data.packages, this._data.name);
-              const _vals = Object.values(_d);
-              this._data.maxActualDepth = _vals.length > 1 ? Math.max(..._vals) : 0;
-              this._maxDepth = this._data.maxActualDepth;
-              this._phase    = 'loaded';
-              this._focusPkg = null;
-              this._error    = '';
-              document.title = `Package Lock Visualizer — ${this._data.name}`;
-              this.requestUpdate();
-              this.updateComplete.then(() => this._draw());
-            } catch (err) {
-              this._error = err.message;
-              this._phase = 'error';
+      _loadFile(file) {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const json = JSON.parse(e.target.result);
+            if (!json.dependencies && !json.packages) {
+              throw new Error('Missing dependencies/packages field — is this a package-lock.json?');
             }
-          };
-          reader.readAsText(file);
-        }
+            this._data = parseLockfile(json);
+            const { depth: _d } = computeDepths(this._data.packages, this._data.name);
+            const _vals = Object.values(_d);
+            this._data.maxActualDepth = _vals.length > 1 ? Math.max(..._vals) : 0;
+            this._maxDepth = this._data.maxActualDepth;
+            this._phase = 'loaded';
+            this._focusPkg = null;
+            this._search = '';
+            this._searchOpen = false;
+            this._error = '';
+            document.title = `Package Lock Visualizer — ${this._data.name}`;
+            this.requestUpdate();
+            this.updateComplete.then(() => this._draw());
+          } catch (err) {
+            this._error = err.message;
+            this._phase = 'error';
+          }
+        };
+        reader.readAsText(file);
+      }
 
-        _draw() {
-          const container = this.querySelector('#sankey-container');
-          if (!container || !this._data) return;
-          const conflictSet = new Set((this._data.duplicates ?? []).map(d => d.name));
-          const sankeyData = buildSankeyData(
-            this._data.packages, this._data.name, this._maxDepth,
-            { filter: this._filter, conflictSet, pathIndex: this._data.pathIndex ?? new Map(), focusPkg: this._focusPkg, includePeerDeps: this._peerDeps }
-          );
-          renderSankey(container, sankeyData, {
-            onNodeClick: (pkgName) => {
-              this._focusPkg = this._focusPkg === pkgName ? null : pkgName;
-              this.requestUpdate();
-              this.updateComplete.then(() => this._draw());
-            },
-          });
-        }
+      _draw() {
+        const container = this.querySelector('#sankey-container');
+        if (!container || !this._data) return;
+        const conflictSet = new Set((this._data.duplicates ?? []).map(d => d.name));
+        const sankeyData = buildSankeyData(
+          this._data.packages, this._data.name, this._maxDepth,
+          { filter: this._filter, conflictSet, pathIndex: this._data.pathIndex ?? new Map(), focusPkg: this._focusPkg, includePeerDeps: false }
+        );
+        renderSankey(container, sankeyData, {
+          onNodeClick: (pkgName) => this._focusPackage(pkgName),
+        });
+      }
 
-        _onMaxDepthChange(e) {
-          this._maxDepth = +e.target.value;
-          if (this._phase === 'loaded') this.updateComplete.then(() => this._draw());
-        }
+      _onMaxDepthChange(e) {
+        this._maxDepth = +e.target.value;
+        if (this._phase === 'loaded') this.updateComplete.then(() => this._draw());
+      }
 
-        _onFilterChange(e) {
-          this._filter = e.target.value;
-          if (this._phase === 'loaded') this.updateComplete.then(() => this._draw());
-        }
+      _onFilterChange(e) {
+        this._filter = e.target.value;
+        if (this._phase === 'loaded') this.updateComplete.then(() => this._draw());
+      }
 
-        _focusPackage(pkgName) {
-          this._focusPkg = this._focusPkg === pkgName ? null : pkgName;
+      _focusPackage(pkgName) {
+        this._focusPkg = this._focusPkg === pkgName ? null : pkgName;
+        this._search = this._focusPkg ?? '';
+        this._searchOpen = false;
+        this.requestUpdate();
+        this.updateComplete.then(() => this._draw());
+      }
+
+      get _suggestions() {
+        if (!this._data || !this._search) return [];
+        const q = this._search.toLowerCase();
+        const conflictNames = new Set((this._data.duplicates ?? []).map(d => d.name));
+        return Object.keys(this._data.packages)
+          .filter(n => n !== this._data.name && n.toLowerCase().includes(q))
+          .sort((a, b) => {
+            const al = a.toLowerCase(), bl = b.toLowerCase();
+            if (al === q) return -1;
+            if (bl === q) return 1;
+            if (al.startsWith(q) && !bl.startsWith(q)) return -1;
+            if (bl.startsWith(q) && !al.startsWith(q)) return 1;
+            return a.localeCompare(b);
+          })
+          .slice(0, 20)
+          .map(name => ({ name, isConflict: conflictNames.has(name) }));
+      }
+
+      _onSearchInput(e) {
+        this._search = e.target.value;
+        this._searchOpen = !!this._search;
+        if (!this._search) {
+          this._focusPkg = null;
           this.requestUpdate();
           this.updateComplete.then(() => this._draw());
         }
+      }
 
-        _reset() {
-          this._phase    = 'idle';
-          this._data     = null;
-          this._filter   = 'all';
-          this._focusPkg = null;
-          this._peerDeps = false;
-          this._error    = '';
-          document.title = 'Package Lock Visualizer';
-          hideTip();
+      _selectSearch(name) {
+        this._focusPackage(name);
+      }
+
+      _clearSearch() {
+        this._search = '';
+        this._searchOpen = false;
+        this._focusPkg = null;
+        this.requestUpdate();
+        this.updateComplete.then(() => this._draw());
+      }
+
+      _onSearchKey(e) {
+        if (e.key === 'Escape') {
+          this._clearSearch();
+        } else if (e.key === 'Enter' && this._suggestions.length) {
+          this._selectSearch(this._suggestions[0].name);
         }
+      }
 
-        _stats() {
-          if (!this._data) return null;
-          const { packages, name, duplicates } = this._data;
-          const { depth, incomingCount } = computeDepths(packages, name);
-          const conflictSet = new Set((duplicates ?? []).map(d => d.name));
-          const focusSubgraph = this._focusPkg
-            ? computeFocusSubgraph(packages, depth, this._focusPkg)
-            : null;
+      _reset() {
+        this._phase = 'idle';
+        this._data = null;
+        this._filter = 'all';
+        this._focusPkg = null;
+        this._error = '';
+        this._search = '';
+        this._searchOpen = false;
+        document.title = 'Package Lock Visualizer';
+        hideTip();
+      }
 
-          const included = ([id]) => {
-            if (id === name) return false;
-            if (focusSubgraph && !focusSubgraph.has(id)) return false;
-            if (this._filter === 'prod')      return !packages[id]?.dev;
-            if (this._filter === 'dev')       return  packages[id]?.dev === true;
-            if (this._filter === 'conflicts') return  conflictSet.has(id);
-            return true;
-          };
+      _stats() {
+        if (!this._data) return null;
+        const { packages, name, duplicates } = this._data;
+        const { depth, bfsParent } = computeDepths(packages, name);
+        const conflictSet = new Set((duplicates ?? []).map(d => d.name));
+        const focusSubgraph = this._focusPkg
+          ? computeFocusSubgraph(packages, depth, this._focusPkg, bfsParent, conflictSet).subgraph
+          : null;
 
-          const entries = Object.entries(depth).filter(included);
-          const total = entries.length;
-          const maxD  = entries.length ? Math.max(...entries.map(([, d]) => d)) : 0;
-          const topPkgs = Object.entries(incomingCount)
-            .filter(included)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5);
-          return { total, maxD, topPkgs };
-        }
+        const included = ([id]) => {
+          if (id === name) return false;
+          if (focusSubgraph && !focusSubgraph.has(id)) return false;
+          if (this._filter === 'prod') return !packages[id]?.dev;
+          if (this._filter === 'dev') return packages[id]?.dev === true;
+          if (this._filter === 'conflicts') return conflictSet.has(id);
+          return true;
+        };
 
-        render() {
-          const stats = this._data ? this._stats() : null;
-          const DEPTH_LABELS = ['Root', 'Direct', 'Depth 2', 'Depth 3', 'Depth 4', 'Depth 5', 'Depth 6+'];
+        const entries = Object.entries(depth).filter(included);
+        const total = entries.length;
+        const maxD = entries.length ? Math.max(...entries.map(([, d]) => d)) : 0;
+        const topPkgs = Object.entries(depth)
+          .filter(included)
+          .map(([id]) => [id, computeTreeSize(id, packages)])
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5);
+        return { total, maxD, topPkgs };
+      }
 
-          return html`
+      render() {
+        const stats = this._data ? this._stats() : null;
+        const DEPTH_LABELS = ['Root', 'Direct', 'Depth 2', 'Depth 3', 'Depth 4', 'Depth 5', 'Depth 6+'];
+
+        return html`
             <div class="min-h-screen bg-slate-900 text-slate-100 p-6">
               <div class="max-w-screen-xl mx-auto">
 
                 <!-- Header -->
-                <header class="mb-8">
-                  <h1 class="text-2xl font-semibold tracking-tight">
-                    Package Lock Visualizer
-                    ${this._data ? html`<span class="text-slate-500 font-normal text-lg ml-2">— ${this._data.name}</span>` : ''}
-                  </h1>
-                  ${!this._data ? html`
+                ${!this._data ? html`
+                  <header class="mb-8">
+                    <h1 class="text-2xl font-semibold tracking-tight">Package Lock Visualizer</h1>
                     <p class="text-slate-400 text-sm mt-1">
                       Upload a
                       <code class="text-blue-400 bg-blue-400/10 px-1.5 py-0.5 rounded text-xs">package-lock.json</code>
                       to explore dependency depth as a Sankey diagram
                     </p>
-                  ` : ''}
-                </header>
+                  </header>
+                ` : html`
+                  <header class="mb-8 flex items-start justify-between">
+                    <div>
+                      ${this._data.packages[this._data.name]?.version ? html`
+                        <div class="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">
+                          v${this._data.packages[this._data.name].version}
+                        </div>
+                      ` : ''}
+                      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">${this._data.name}</h1>
+                    </div>
+                    <span class="text-slate-600 text-sm font-medium mt-1.5 select-none">Package Lock Visualizer</span>
+                  </header>
+                `}
 
                 <!-- Upload / error zone -->
                 ${this._phase !== 'loaded' ? html`
@@ -816,68 +881,135 @@
                       </select>
                     </div>
 
-                    <div class="w-px h-4 bg-slate-700"></div>
-
-                    <label class="flex items-center gap-1.5 text-sm text-slate-400 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        .checked=${this._peerDeps}
-                        @change=${(e) => { this._peerDeps = e.target.checked; this.updateComplete.then(() => this._draw()); }}
-                        class="accent-blue-500 cursor-pointer"
-                      />
-                      Peer deps
-                    </label>
-
-                    ${this._focusPkg ? html`
-                      <div class="flex items-center gap-2 text-sm bg-blue-900/40 border border-blue-700/50 rounded px-3 py-1">
-                        <span class="text-blue-300">Focused: <strong>${this._focusPkg}</strong></span>
-                        <button
-                          @click=${() => this._focusPackage(null)}
-                          class="text-blue-400 hover:text-white ml-1 leading-none cursor-pointer"
-                          title="Clear focus"
-                        >✕</button>
+                    <div class="relative">
+                      <div class="flex items-center gap-1.5 rounded px-2 py-1
+                                  ${this._focusPkg
+              ? 'bg-blue-900/30 border border-blue-600/60'
+              : 'bg-slate-700 border border-slate-600'}">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2.5"
+                             stroke-linecap="round" stroke-linejoin="round"
+                             class="${this._focusPkg ? 'text-blue-400' : 'text-slate-500'}">
+                          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input
+                          type="text"
+                          .value=${this._search}
+                          @input=${this._onSearchInput}
+                          @focus=${() => { if (this._search) this._searchOpen = true; }}
+                          @blur=${() => setTimeout(() => { this._searchOpen = false; }, 150)}
+                          @keydown=${this._onSearchKey}
+                          placeholder="Filter package…"
+                          class="bg-transparent text-sm outline-none w-40
+                                 ${this._focusPkg ? 'text-blue-200' : 'text-slate-200'}
+                                 placeholder-slate-500"
+                        />
+                        ${this._search ? html`
+                          <button
+                            @click=${this._clearSearch}
+                            class="text-slate-500 hover:text-white leading-none cursor-pointer text-xs"
+                            title="Clear"
+                          >✕</button>
+                        ` : ''}
                       </div>
-                    ` : ''}
+                      ${this._searchOpen && this._suggestions.length ? html`
+                        <div class="absolute top-full mt-1 left-0 bg-slate-800 border border-slate-600
+                                    rounded-lg shadow-xl z-50 w-72 max-h-64 overflow-y-auto">
+                          ${this._suggestions.map(({ name, isConflict }) => html`
+                            <button
+                              class="w-full text-left px-3 py-2 text-sm hover:bg-slate-700 flex items-center gap-2
+                                     ${name === this._focusPkg ? 'bg-blue-900/30' : ''}"
+                              @mousedown=${(e) => { e.preventDefault(); this._selectSearch(name); }}
+                            >
+                              <span class="${isConflict ? 'text-fuchsia-400' : 'text-slate-200'} truncate flex-1">${name}</span>
+                              ${isConflict ? html`<span class="text-xs text-fuchsia-600 shrink-0">conflict</span>` : ''}
+                            </button>
+                          `)}
+                        </div>
+                      ` : ''}
+                    </div>
 
                     ${stats ? html`
-                      <div class="flex items-center gap-5 text-sm text-slate-400 ml-auto">
-                        <span title="${this._data.installedCount} unique packages, ${this._data.pathCount} total install paths">
+                      <div class="relative group flex items-center gap-1.5 text-sm text-slate-400 ml-auto cursor-default select-none">
+                        <span>
                           <span class="text-slate-200 font-semibold">${stats.total}</span>
                           ${stats.total !== this._data.installedCount ? html`
-                            <span class="text-slate-600">of ${this._data.installedCount}</span>
+                            <span class="text-slate-500"> of ${this._data.installedCount}</span>
                           ` : ''}
-                          <span class="text-slate-600">unique</span>
-                          · <span class="text-slate-500">${this._data.pathCount} paths</span>
+                          <span class="text-slate-500"> packages</span>
                         </span>
-                        <span><span class="text-slate-200 font-semibold">${stats.maxD}</span> max depth</span>
-                        <span class="text-slate-600">v${this._data.lockfileVersion}</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
+                             fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                             class="text-slate-600 group-hover:text-slate-400 transition-colors">
+                          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                        </svg>
+                        <div class="absolute top-full right-0 mt-2 w-56 bg-slate-800 border border-slate-700
+                                    rounded-lg shadow-xl p-3 text-xs text-slate-400 leading-relaxed
+                                    invisible opacity-0 group-hover:visible group-hover:opacity-100
+                                    transition-opacity duration-150 pointer-events-none z-50">
+                          <div class="flex justify-between py-0.5">
+                            <span class="text-slate-500">Visible</span>
+                            <span class="text-slate-200">${stats.total} packages</span>
+                          </div>
+                          <div class="flex justify-between py-0.5">
+                            <span class="text-slate-500">Total unique</span>
+                            <span class="text-slate-200">${this._data.installedCount}</span>
+                          </div>
+                          <div class="flex justify-between py-0.5">
+                            <span class="text-slate-500">Install paths</span>
+                            <span class="text-slate-200">${this._data.pathCount}</span>
+                          </div>
+                          <div class="flex justify-between py-0.5">
+                            <span class="text-slate-500">Max depth</span>
+                            <span class="text-slate-200">${stats.maxD}</span>
+                          </div>
+                          <div class="flex justify-between py-0.5">
+                            <span class="text-slate-500">Lockfile version</span>
+                            <span class="text-slate-200">v${this._data.lockfileVersion}</span>
+                          </div>
+                          ${this._data.duplicates?.length ? html`
+                            <div class="flex justify-between py-0.5">
+                              <span class="text-slate-500">Version conflicts</span>
+                              <span class="text-fuchsia-400">${this._data.duplicates.length}</span>
+                            </div>
+                          ` : ''}
+                        </div>
                       </div>
                     ` : ''}
 
                     <button
                       @click=${this._reset}
-                      class="text-sm text-slate-400 hover:text-slate-200 border border-slate-700
-                             hover:border-slate-500 rounded px-3 py-1 transition-colors cursor-pointer"
-                    >↩ Load another</button>
+                      class="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200
+                             border border-slate-700 hover:border-slate-500 rounded px-3 py-1
+                             transition-colors cursor-pointer"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
+                           fill="none" stroke="currentColor" stroke-width="2.5"
+                           stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+                        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+                      </svg>
+                      Upload
+                    </button>
                   </div>
 
                   <!-- Top packages -->
                   ${stats?.topPkgs.length ? html`
                     <div class="mb-5">
-                      <p class="text-xs text-slate-500 uppercase tracking-widest mb-2">Most required packages</p>
+                      <p class="text-xs text-slate-500 uppercase tracking-widest mb-2">Largest dependency trees</p>
                       <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-                        ${stats.topPkgs.map(([pkgName, count]) => html`
+                        ${stats.topPkgs.map(([pkgName, treeSize]) => html`
                           <button
                             @click=${() => this._focusPackage(pkgName)}
                             class="text-left bg-slate-800/80 border rounded-lg px-3 py-2.5 transition-all cursor-pointer
                                    ${this._focusPkg === pkgName
-                                     ? 'border-blue-500 bg-blue-900/30'
-                                     : 'border-slate-700/60 hover:border-slate-500'}"
+                  ? 'border-blue-500 bg-blue-900/30'
+                  : 'border-slate-700/60 hover:border-slate-500'}"
                           >
                             <div class="text-slate-200 text-sm font-medium truncate" title=${pkgName}>
                               ${pkgName}
                             </div>
-                            <div class="text-slate-500 text-xs mt-0.5">${count} dependents</div>
+                            <div class="text-slate-500 text-xs mt-0.5">${treeSize} pkg tree</div>
                           </button>
                         `)}
                       </div>
@@ -899,8 +1031,8 @@
                     `)}
                     ${this._data.duplicates?.length ? html`
                       <div class="flex items-center gap-1.5 ml-2 pl-4 border-l border-slate-700">
-                        <div class="w-3 h-3 rounded-sm" style="background:#f59e0b"></div>
-                        <span class="text-amber-500/70">Version conflict</span>
+                        <div class="w-3 h-3 rounded-sm" style="background:#c026d3"></div>
+                        <span style="color:#c026d3cc">Version conflict</span>
                       </div>
                     ` : ''}
                   </div>
@@ -910,10 +1042,11 @@
               </div>
             </div>
           `;
-        }
       }
+    }
 
-      customElements.define('pkg-lock-visualizer', PkgLockVisualizer);
-    </script>
-  </body>
+    customElements.define('pkg-lock-visualizer', PkgLockVisualizer);
+  </script>
+</body>
+
 </html>
