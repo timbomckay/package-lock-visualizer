@@ -1,1052 +1,1518 @@
 <!doctype html>
 <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Package Lock Visualizer</title>
+    <meta name="description" content="Visualize your package-lock.json as an interactive Sankey diagram. Explore dependency trees, spot version conflicts, and trace transitive dependencies." />
 
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Package Lock Visualizer</title>
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Package Lock Visualizer" />
+    <meta property="og:description" content="Visualize your package-lock.json as an interactive Sankey diagram. Explore dependency trees, spot version conflicts, and trace transitive dependencies." />
+    <meta property="og:image" content="https://images.fineartamerica.com/images-medium-large-5/abstract-original-tree-art-painting--colors-of-the-wind-amy-giacomelli.jpg" />
+    <meta property="og:image:alt" content="Abstract colorful tree painting" />
 
-  <!-- Tailwind CSS v4 CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Package Lock Visualizer" />
+    <meta name="twitter:description" content="Visualize your package-lock.json as an interactive Sankey diagram. Explore dependency trees, spot version conflicts, and trace transitive dependencies." />
+    <meta name="twitter:image" content="https://images.fineartamerica.com/images-medium-large-5/abstract-original-tree-art-painting--colors-of-the-wind-amy-giacomelli.jpg" />
+    <meta name="twitter:image:alt" content="Abstract colorful tree painting" />
 
-  <!-- Import map: Lit + D3 + d3-sankey via ESM -->
-  <script type="importmap">
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+    <script type="importmap">
       {
         "imports": {
           "lit": "https://cdn.jsdelivr.net/npm/lit@3/+esm",
           "d3": "https://cdn.jsdelivr.net/npm/d3@7/+esm",
           "d3-sankey": "https://cdn.jsdelivr.net/npm/d3-sankey@0.12.3/+esm",
-          "semver": "https://cdn.jsdelivr.net/npm/semver@7/+esm"
+          "semver": "https://cdn.jsdelivr.net/npm/semver@6/+esm"
         }
       }
     </script>
 
-  <style>
-    body {
-      background: #0f172a;
-      font-family: system-ui, sans-serif;
-    }
+    <style>
+      body {
+        background: #0f172a;
+        font-family: system-ui, sans-serif;
+      }
 
-    .drop-zone {
-      transition: border-color 0.2s, background 0.2s;
-    }
+      .drop-zone {
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
 
-    .drop-zone.drag-over {
-      border-color: #3b82f6 !important;
-      background: rgba(59, 130, 246, 0.06);
-    }
+      .drop-zone.drag-over {
+        border-color: #3b82f6 !important;
+        background: rgba(59, 130, 246, 0.06);
+      }
 
-    .sankey-link {
-      fill: none;
-      stroke-opacity: 0.22;
-      transition: stroke-opacity 0.15s;
-    }
+      .sankey-link {
+        fill: none;
+        stroke-opacity: 0.22;
+        transition: stroke-opacity 0.15s;
+      }
 
-    .sankey-link:hover {
-      stroke-opacity: 0.65;
-    }
+      .sankey-link:hover {
+        stroke-opacity: 0.65;
+      }
 
-    #sankey-tooltip {
-      position: fixed;
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 6px;
-      padding: 8px 12px;
-      font-size: 12px;
-      line-height: 1.6;
-      color: #e2e8f0;
-      pointer-events: none;
-      z-index: 200;
-      max-width: 280px;
-      display: none;
-    }
-  </style>
-</head>
+      .sankey-link.peer {
+        stroke-dasharray: 6 3;
+        stroke-opacity: 0.28;
+      }
 
-<body class="text-slate-100">
-  <pkg-lock-visualizer></pkg-lock-visualizer>
-  <div id="sankey-tooltip"></div>
+      .sankey-link.peer:hover {
+        stroke-opacity: 0.7;
+      }
 
-  <script type="module">
-    import { LitElement, html } from 'lit';
-    import * as d3 from 'd3';
-    import { sankey as createSankey, sankeyLinkHorizontal } from 'd3-sankey';
+      #sankey-tooltip {
+        position: fixed;
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #e2e8f0;
+        pointer-events: auto;
+        z-index: 200;
+        max-width: 280px;
+        display: none;
+      }
+    </style>
+  </head>
 
-    /* ── Depth color scale ──────────────────────────────────────── */
-    const DEPTH_COLORS = ['#6366f1', '#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#f97316', '#ef4444'];
-    const depthColor = (d) => d.isConflict ? '#c026d3' : DEPTH_COLORS[Math.min(d.pkgDepth ?? 0, DEPTH_COLORS.length - 1)];
+  <body class="text-slate-100">
+    <pkg-lock-visualizer></pkg-lock-visualizer>
+    <div id="sankey-tooltip"></div>
 
-    /* ── Tooltip helpers ────────────────────────────────────────── */
-    const $tip = () => document.getElementById('sankey-tooltip');
-    function showTip(event, markup) {
-      const t = $tip();
-      t.innerHTML = markup;
-      t.style.display = 'block';
-      t.style.left = event.clientX + 14 + 'px';
-      t.style.top = event.clientY - 8 + 'px';
-    }
-    function hideTip() { $tip().style.display = 'none'; }
+    <script type="module">
+      import { LitElement, html } from 'lit';
+      import * as d3 from 'd3';
+      import { sankey as createSankey, sankeyLinkHorizontal, sankeyLeft } from 'd3-sankey';
+      import { maxSatisfying } from 'semver';
 
-    /* ─────────────────────────────────────────────────────────────
-       parseLockfile
-       Supports lockfileVersion 1 (recursive dependencies) and
-       v2/v3 (flat packages map). Returns { name, lockfileVersion, packages }
-       where packages[name] = { version, deps[], dev, isRoot }.
-    ───────────────────────────────────────────────────────────── */
-    function parseLockfile(json) {
-      const name = json.name || 'root';
-      const lockfileVersion = json.lockfileVersion ?? 1;
-      const packages = {};
+      /* ── Data layer (from data.js) ──────────────────────────────────── */
 
-      const versionsSeen = new Map(); // pkgName → Set<version>
-      const pathIndex = new Map(); // path → { name, version }
+      function buildSankeyData(lock, { includeDev = true } = {}) {
+        const packages = lock.packages ?? {};
+        const rootName = lock.name || 'root';
 
-      if (lockfileVersion >= 2 && json.packages) {
-        for (const [path, info] of Object.entries(json.packages)) {
-          if (path === '') {
-            // Root package — include runtime + dev deps
-            packages[name] = {
-              version: json.version || '',
-              deps: [
-                ...Object.keys(info.dependencies || {}),
-                ...Object.keys(info.devDependencies || {}),
-              ],
-              isRoot: true,
-              dev: false,
-            };
+        const nodeMap = new Map();
+        const pkgMap = new Map();
+        const pathToId = new Map();
+        const linkMap = new Map();
+
+        for (const [path, info] of Object.entries(packages)) {
+          const isRoot = path === '';
+          if (!isRoot && !includeDev && info.dev) continue;
+
+          const name = isRoot ? rootName : path.split('node_modules/').at(-1);
+          const version = info.version ?? '0.0.0';
+          const id = `${name}@${version}`;
+
+          pathToId.set(path, id);
+          if (!pkgMap.has(name)) pkgMap.set(name, new Map());
+          pkgMap.get(name).set(version, id);
+
+          if (!nodeMap.has(id)) {
+            nodeMap.set(id, {
+              id,
+              name,
+              nameLower: name.toLowerCase(),
+              version,
+              dev: info.dev ?? false,
+              isPeer: info.peer ?? false,
+              isRoot,
+              isConflict: false,
+            });
           } else {
-            // Extract package name from the last node_modules/xxx segment
-            const pkgName = path.split('node_modules/').at(-1);
-            const ver = info.version || '';
-            if (!versionsSeen.has(pkgName)) versionsSeen.set(pkgName, new Set());
-            versionsSeen.get(pkgName).add(ver);
-            const deps = Object.keys({ ...(info.dependencies || {}), ...(info.optionalDependencies || {}) });
-            const peerDeps = Object.keys(info.peerDependencies || {});
-            pathIndex.set(path, { name: pkgName, version: ver, deps, peerDeps });
-            if (!packages[pkgName]) {
-              packages[pkgName] = { version: ver, deps, peerDeps, dev: info.dev || false, isRoot: false };
+            const node = nodeMap.get(id);
+            if (!info.dev) node.dev = false;
+            if (!info.peer) node.isPeer = false;
+          }
+        }
+
+        for (const [, versions] of pkgMap) {
+          if (versions.size > 1) {
+            const versionList = [...versions.keys()].sort((a, b) =>
+              a.localeCompare(b, undefined, { numeric: true })
+            );
+            for (const id of versions.values()) {
+              const node = nodeMap.get(id);
+              node.isConflict = true;
+              node.conflictVersions = versionList;
             }
           }
         }
-      } else if (json.dependencies) {
-        // v1 — recursive nested structure
-        packages[name] = {
-          version: json.version || '',
-          deps: Object.keys(json.dependencies),
-          isRoot: true,
-          dev: false,
+
+        for (const [path, info] of Object.entries(packages)) {
+          const id = pathToId.get(path);
+          if (!id) continue;
+          if (
+            !info.dependencies &&
+            !info.devDependencies &&
+            !info.optionalDependencies &&
+            !info.peerDependencies
+          )
+            continue;
+          const allDeps = {
+            ...info.dependencies,
+            ...(includeDev ? info.devDependencies : undefined),
+            ...info.optionalDependencies,
+          };
+
+          for (const [dep, range] of Object.entries(allDeps)) {
+            if (!pkgMap.has(dep)) continue;
+            const versions = [...pkgMap.get(dep).keys()];
+            const resolved = maxSatisfying(versions, range);
+            if (!resolved) continue;
+            const target = `${dep}@${resolved}`;
+            const key = `${id}→${target}`;
+            if (!linkMap.has(key)) linkMap.set(key, { source: id, target, value: 1 });
+          }
+
+          for (const [dep, range] of Object.entries(info.peerDependencies ?? {})) {
+            if (!pkgMap.has(dep)) continue;
+            const versions = [...pkgMap.get(dep).keys()];
+            const resolved = maxSatisfying(versions, range);
+            if (!resolved) continue;
+            const target = `${dep}@${resolved}`;
+            const key = `${id}→${target}`;
+            if (!nodeMap.get(target).isPeer) continue;
+            if (!linkMap.has(key)) linkMap.set(key, { source: id, target, value: 1, isPeer: true });
+          }
+        }
+
+        // Build adjacency list then run iterative DFS to drop back edges (cycle-breaking).
+        const adjacency = new Map();
+        for (const id of nodeMap.keys()) adjacency.set(id, new Set());
+        for (const { source, target } of linkMap.values()) adjacency.get(source)?.add(target);
+
+        const visited = new Set();
+        const inPath = new Set();
+        for (const startId of nodeMap.keys()) {
+          if (visited.has(startId)) continue;
+          const stack = [{ nodeId: startId, neighbors: adjacency.get(startId).values() }];
+          inPath.add(startId);
+          visited.add(startId);
+          while (stack.length > 0) {
+            const frame = stack[stack.length - 1];
+            const { value: neighbor, done } = frame.neighbors.next();
+            if (done) {
+              inPath.delete(frame.nodeId);
+              stack.pop();
+            } else if (inPath.has(neighbor)) {
+              linkMap.delete(`${frame.nodeId}→${neighbor}`);
+            } else if (!visited.has(neighbor)) {
+              visited.add(neighbor);
+              inPath.add(neighbor);
+              stack.push({ nodeId: neighbor, neighbors: adjacency.get(neighbor).values() });
+            }
+          }
+        }
+
+        const rootEntry = packages[''] ?? {};
+        const rootDeps = new Map();
+        for (const name of Object.keys(rootEntry.dependencies ?? {})) rootDeps.set(name, 'prod');
+        for (const name of Object.keys(rootEntry.devDependencies ?? {})) rootDeps.set(name, 'dev');
+        for (const name of Object.keys(rootEntry.optionalDependencies ?? {})) rootDeps.set(name, 'optional');
+        for (const name of Object.keys(rootEntry.peerDependencies ?? {})) rootDeps.set(name, 'peer');
+
+        const nodeList = Array.from(nodeMap.values());
+        return {
+          name: rootName,
+          lockfileVersion: lock.lockfileVersion ?? 1,
+          installPaths: Object.keys(packages).filter((k) => k !== '').length,
+          uniqueCount: pkgMap.size - 1,
+          packages: pkgMap,
+          rootDeps,
+          nodes: nodeList,
+          links: Array.from(linkMap.values()),
         };
-
-        const flattenV1 = (deps) => {
-          for (const [pkgName, info] of Object.entries(deps || {})) {
-            if (!packages[pkgName]) {
-              packages[pkgName] = {
-                version: info.version || '',
-                deps: Object.keys(info.requires || {}),
-                dev: info.dev || false,
-                isRoot: false,
-              };
-            }
-            if (info.dependencies) flattenV1(info.dependencies);
-          }
-        };
-        flattenV1(json.dependencies);
       }
 
-      // uniqueCount = distinct package names; pathCount = total installed paths
-      // (pathCount matches Object.keys(json.packages).length - 1 for v2/v3)
-      const uniqueCount = Object.keys(packages).filter(k => !packages[k].isRoot).length;
-      const pathCount = pathIndex.size; // one entry per install path
-      const installedCount = uniqueCount;
+      const NO_PACKAGES_MSG = '<p style="color:#475569;padding:3rem;text-align:center">No packages match this filter.</p>';
+      const STORAGE_KEY = 'pkg-lock-saves';
 
-      // Packages installed at multiple paths (version conflicts)
-      // Only packages with 2+ *distinct* versions are true conflicts
-      const duplicates = [...versionsSeen.entries()]
-        .filter(([, vers]) => vers.size > 1)
-        .map(([pkgName, vers]) => ({ name: pkgName, versions: [...vers], count: vers.size }))
-        .sort((a, b) => b.count - a.count);
+      /* ── Color scale (indexed by d3-sankey's assigned depth) ───────── */
+      const DEPTH_COLORS = [
+        '#6366f1',
+        '#3b82f6',
+        '#06b6d4',
+        '#10b981',
+        '#f59e0b',
+        '#f97316',
+        '#ef4444',
+      ];
+      const SEVERITY_RANK = { CRITICAL: 4, HIGH: 3, MODERATE: 2, LOW: 1 };
+      const SEVERITY_COLOR = { CRITICAL: '#ef4444', HIGH: '#f97316', MODERATE: '#f59e0b', LOW: '#fbbf24' };
 
-      return { name, lockfileVersion, packages, installedCount, pathCount, duplicates, pathIndex };
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       computeTreeSize
-       BFS count of all unique packages transitively required by
-       pkgName (not counting pkgName itself).
-    ───────────────────────────────────────────────────────────── */
-    function computeTreeSize(pkgName, packages) {
-      const visited = new Set();
-      const queue = [pkgName];
-      while (queue.length) {
-        const curr = queue.shift();
-        for (const dep of packages[curr]?.deps ?? []) {
-          if (dep in packages && !visited.has(dep)) {
-            visited.add(dep);
-            queue.push(dep);
-          }
+      function parseCvssV3Score(vector) {
+        const m = {};
+        for (const part of vector.split('/').slice(1)) {
+          const [k, v] = part.split(':');
+          m[k] = v;
         }
+        const AV = { N: 0.85, A: 0.62, L: 0.55, P: 0.2 }[m.AV] ?? 0.85;
+        const AC = { L: 0.77, H: 0.44 }[m.AC] ?? 0.77;
+        const sc = m.S === 'C';
+        const PR = sc ? { N: 0.85, L: 0.68, H: 0.50 }[m.PR] ?? 0.85 : { N: 0.85, L: 0.62, H: 0.27 }[m.PR] ?? 0.85;
+        const UI = { N: 0.85, R: 0.62 }[m.UI] ?? 0.85;
+        const CIA = { N: 0, L: 0.22, H: 0.56 };
+        const iscBase = 1 - (1 - (CIA[m.C] ?? 0)) * (1 - (CIA[m.I] ?? 0)) * (1 - (CIA[m.A] ?? 0));
+        const isc = sc
+          ? 7.52 * (iscBase - 0.029) - 3.25 * Math.pow(iscBase - 0.02, 15)
+          : 6.42 * iscBase;
+        if (isc <= 0) return 0;
+        const base = sc
+          ? Math.min(1.08 * (isc + 8.22 * AV * AC * PR * UI), 10)
+          : Math.min(isc + 8.22 * AV * AC * PR * UI, 10);
+        return Math.ceil(base * 10) / 10;
       }
-      return visited.size;
-    }
 
-    /* ─────────────────────────────────────────────────────────────
-       computeDepths
-       BFS shortest-path depth via declared dep edges (matches
-       npm ls depth).  incomingCount counts all dependents across
-       the whole graph regardless of depth direction.
-         depth         — { pkgName → min hops from root }
-         incomingCount — { pkgName → # packages that depend on it }
-    ───────────────────────────────────────────────────────────── */
-    function computeDepths(packages, rootName) {
-      const depth = { [rootName]: 0 };
-      const bfsParent = {};
-      const queue = [rootName];
-      while (queue.length) {
-        const curr = queue.shift();
-        for (const dep of packages[curr]?.deps ?? []) {
-          if (dep in packages && !(dep in depth)) {
-            depth[dep] = depth[curr] + 1;
-            bfsParent[dep] = curr;
-            queue.push(dep);
+      function getSeverity(v) {
+        const db = v.database_specific?.severity?.toUpperCase();
+        if (db && SEVERITY_RANK[db]) return db;
+        for (const s of v.severity ?? []) {
+          if (s.type === 'CVSS_V3') {
+            try {
+              const score = parseCvssV3Score(s.score);
+              if (score >= 9.0) return 'CRITICAL';
+              if (score >= 7.0) return 'HIGH';
+              if (score >= 4.0) return 'MODERATE';
+              if (score > 0)   return 'LOW';
+            } catch {}
           }
         }
-      }
-      const incomingCount = {};
-      for (const pkg of Object.values(packages)) {
-        for (const dep of pkg.deps ?? []) {
-          if (dep in depth) incomingCount[dep] = (incomingCount[dep] ?? 0) + 1;
-        }
-      }
-      return { depth, incomingCount, bfsParent };
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       computeFocusSubgraph
-       Returns the Set of all package names reachable from focusPkg
-       (forward) plus all ancestors that lead to it (reverse BFS).
-    ───────────────────────────────────────────────────────────── */
-    function computeFocusSubgraph(packages, depth, focusPkg, bfsParent, conflictSet = new Set()) {
-      const subgraph = new Set([focusPkg]);
-      // Forward: focusPkg + everything it transitively requires (descendants)
-      const fwd = [focusPkg];
-      while (fwd.length) {
-        const curr = fwd.shift();
-        for (const dep of packages[curr]?.deps ?? []) {
-          if (!subgraph.has(dep) && dep in depth) { subgraph.add(dep); fwd.push(dep); }
-        }
-      }
-      // Backward: for each direct parent of focusPkg, walk BFS parent pointers
-      // back to root. This gives exact ancestor chains without including cousins.
-      const rdeps = {};
-      for (const [name, pkg] of Object.entries(packages)) {
-        for (const dep of pkg.deps ?? []) {
-          if (!rdeps[dep]) rdeps[dep] = [];
-          rdeps[dep].push(name);
-        }
-      }
-      const ancestors = new Set();
-      const addChain = (start) => {
-        let curr = start;
-        while (curr && !ancestors.has(curr)) {
-          ancestors.add(curr);
-          subgraph.add(curr);
-          curr = bfsParent[curr];
-        }
-      };
-      const focusDepth = depth[focusPkg] ?? 0;
-      const depthLimit = focusDepth - 1;
-      for (const directParent of rdeps[focusPkg] ?? []) {
-        if (directParent in depth && depth[directParent] <= depthLimit) addChain(directParent);
-      }
-      return { subgraph, ancestors };
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       computeConflictPaths
-       Reverse-BFS from every conflicting package up through its
-       ancestors — returns the Set of all nodes on any path that
-       leads to a version conflict.
-    ───────────────────────────────────────────────────────────── */
-    function computeConflictPaths(packages, depth, conflictSet) {
-      // Build reverse adjacency map
-      const rdeps = {};
-      for (const [name, pkg] of Object.entries(packages)) {
-        for (const dep of pkg.deps ?? []) {
-          if (!rdeps[dep]) rdeps[dep] = [];
-          rdeps[dep].push(name);
-        }
-      }
-      const onPath = new Set(conflictSet);
-      const queue = [...conflictSet];
-      while (queue.length) {
-        const curr = queue.shift();
-        for (const parent of rdeps[curr] ?? []) {
-          if (!onPath.has(parent) && parent in depth) {
-            onPath.add(parent);
-            queue.push(parent);
-          }
-        }
-      }
-      return onPath;
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       adjustLeafDepths
-       Two-pass depth adjustment:
-         Pass 1 — conflict packages are bumped to max(parent)+1 so
-                  every parent can have a forward link to them.
-         Pass 2 — leaf packages (no outgoing deps) are bumped using
-                  the updated depths from pass 1.
-    ───────────────────────────────────────────────────────────── */
-    function adjustLeafDepths(packages, depth, conflictSet = new Set()) {
-      const parents = {};
-      for (const [name, pkg] of Object.entries(packages)) {
-        for (const dep of pkg.deps ?? []) {
-          if (!parents[dep]) parents[dep] = [];
-          parents[dep].push(name);
-        }
-      }
-      const adjusted = { ...depth };
-      // Pass 1: conflict packages must sit deeper than ALL their parents
-      for (const name of conflictSet) {
-        if (!(name in adjusted)) continue;
-        const pkgParents = (parents[name] ?? []).filter(p => p in adjusted);
-        if (!pkgParents.length) continue;
-        const maxP = Math.max(...pkgParents.map(p => adjusted[p]));
-        adjusted[name] = Math.max(adjusted[name], maxP + 1);
-      }
-      // Pass 2: leaf packages sit right of their deepest parent (uses updated depths from pass 1)
-      for (const [name, d] of Object.entries(adjusted)) {
-        if (conflictSet.has(name)) continue;
-        if ((packages[name]?.deps ?? []).some(dep => dep in adjusted)) continue;
-        const pkgParents = (parents[name] ?? []).filter(p => p in adjusted);
-        if (!pkgParents.length) continue;
-        const maxP = Math.max(...pkgParents.map(p => adjusted[p]));
-        adjusted[name] = Math.max(d, maxP + 1);
-      }
-      return adjusted;
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       buildSankeyData
-       One node per package name (conflict or not). Conflict packages
-       are colored fuchsia; links *into* conflict packages are also
-       fuchsia so the conflict is visible on the incoming edge.
-       filter: 'all' | 'prod' | 'dev' | 'conflicts'
-    ───────────────────────────────────────────────────────────── */
-    function buildSankeyData(packages, rootName, maxDepth = 3, { filter = 'all', conflictSet = new Set(), pathIndex = new Map(), focusPkg = null, includePeerDeps = false } = {}) {
-      const { depth: rawDepth, incomingCount, bfsParent } = computeDepths(packages, rootName);
-      const globalDepth = adjustLeafDepths(packages, rawDepth, conflictSet);
-
-      const conflictPaths = filter === 'conflicts'
-        ? computeConflictPaths(packages, globalDepth, conflictSet)
-        : null;
-
-      const focusResult = focusPkg ? computeFocusSubgraph(packages, globalDepth, focusPkg, bfsParent, conflictSet) : null;
-      const focusSubgraph = focusResult?.subgraph ?? null;
-      const focusAncestors = focusResult?.ancestors ?? null;
-
-      const depth = { ...globalDepth };
-
-      const depthValues = Object.values(depth);
-      const maxActualDepth = depthValues.length > 1 ? Math.max(...depthValues) : 0;
-      let effectiveMax = Math.min(maxDepth, maxActualDepth);
-
-      const pkgIncluded = (id, d) => {
-        if (d < 1 || d > effectiveMax) return false;
-        if (focusSubgraph && !focusSubgraph.has(id)) return false;
-        if (filter === 'prod') return !packages[id]?.dev;
-        if (filter === 'dev') return packages[id]?.dev === true;
-        if (filter === 'conflicts') return conflictPaths.has(id);
-        return true;
-      };
-
-      // In focus mode, re-depth descendants so they sit strictly to the right
-      // of focusPkg. Ancestors keep their global depths.
-      if (focusPkg && focusAncestors) {
-        const baseFocusDepth = depth[focusPkg] ?? 1;
-        const focusBFS = new Map([[focusPkg, 0]]);
-        const queue = [focusPkg];
-        while (queue.length) {
-          const curr = queue.shift();
-          const hops = focusBFS.get(curr);
-          for (const dep of packages[curr]?.deps ?? []) {
-            if (!focusBFS.has(dep) && dep in depth) {
-              focusBFS.set(dep, hops + 1);
-              queue.push(dep);
-            }
-          }
-        }
-        for (const [pkg, hops] of focusBFS) {
-          if (hops > 0 && pkg in depth) {
-            depth[pkg] = baseFocusDepth + hops;
-          }
-        }
-        // Leaf nodes reachable via multiple parents at different re-depth'd values
-        // must sit right of their deepest parent (same issue as adjustLeafDepths).
-        const focusParentMap = {};
-        for (const name of focusSubgraph) {
-          for (const dep of packages[name]?.deps ?? []) {
-            if (dep in depth && focusSubgraph.has(dep)) {
-              if (!focusParentMap[dep]) focusParentMap[dep] = [];
-              focusParentMap[dep].push(name);
-            }
-          }
-        }
-        for (const pkg of focusSubgraph) {
-          if (!(pkg in depth)) continue;
-          const hasDeps = (packages[pkg]?.deps ?? []).some(d => d in depth && focusSubgraph.has(d));
-          if (hasDeps) continue;
-          const parents = focusParentMap[pkg] ?? [];
-          if (!parents.length) continue;
-          const maxParentDepth = Math.max(...parents.map(p => depth[p]));
-          if (depth[pkg] <= maxParentDepth) depth[pkg] = maxParentDepth + 1;
-        }
-        effectiveMax = Math.max(...Object.values(depth));
+        return null;
       }
 
-      const nodeArr = [];
-      const nodeIdx = new Map();
+      function worstSeverity(vulns) {
+        let worst = null, rank = 0;
+        for (const v of vulns) {
+          const s = getSeverity(v);
+          if (s && (SEVERITY_RANK[s] ?? 0) > rank) { worst = s; rank = SEVERITY_RANK[s]; }
+        }
+        return worst;
+      }
+      function vulnColor(vulns) {
+        const s = worstSeverity(vulns);
+        return SEVERITY_COLOR[s] ?? '#ef4444';
+      }
+      const depthColor = (d) =>
+        d.isConflict ? '#c026d3' : DEPTH_COLORS[Math.min(d.depth ?? 0, DEPTH_COLORS.length - 1)];
 
-      Object.entries(depth)
-        .filter(([id, d]) => pkgIncluded(id, d))
-        .sort(([a, da], [b, db]) => da !== db ? da - db : (incomingCount[b] ?? 0) - (incomingCount[a] ?? 0))
-        .forEach(([id, d]) => {
-          if (nodeIdx.has(id)) return;
-          const isConflict = conflictSet.has(id);
-          const versions = isConflict
-            ? [...new Set([...pathIndex.values()].filter(e => e.name === id).map(e => e.version))]
-            : null;
-          nodeIdx.set(id, nodeArr.length);
-          nodeArr.push({ id, name: id, pkgName: id, pkgDepth: d, version: packages[id]?.version ?? '', versions, dev: packages[id]?.dev ?? false, isConflict, isRoot: packages[id]?.isRoot ?? false, treeSize: computeTreeSize(id, packages) });
+      /* ── Tooltip ────────────────────────────────────────────────────── */
+      const $tip = () => document.getElementById('sankey-tooltip');
+      let _tipTimer = null;
+      function showTip(ev, markup) {
+        clearTimeout(_tipTimer);
+        const t = $tip();
+        t.innerHTML = markup;
+        t.style.display = 'block';
+        t.style.left = ev.clientX + 14 + 'px';
+        t.style.top = ev.clientY - 8 + 'px';
+      }
+      function hideTip() {
+        _tipTimer = setTimeout(() => { $tip().style.display = 'none'; }, 200);
+      }
+      document.getElementById('sankey-tooltip').addEventListener('mouseenter', () => clearTimeout(_tipTimer));
+      document.getElementById('sankey-tooltip').addEventListener('mouseleave', hideTip);
+
+      /* ── Depth helpers ──────────────────────────────────────────────── */
+      function computeMaxDepth(nodes, links) {
+        if (!nodes.length || !links.length) return 1;
+        const layout = createSankey()
+          .nodeId((d) => d.id)
+          .nodeAlign(sankeyLeft);
+        const graph = layout({
+          nodes: nodes.map((d) => ({ ...d })),
+          links: links.map((d) => ({ ...d })),
         });
+        return Math.max(0, ...graph.nodes.map((n) => n.depth ?? 0)) + 1;
+      }
 
-      // Build links — compare each node's pkgDepth (our own field, not d3-sankey's
-      // internal depth) so the forward-only check survives layout reassignment.
-      const linkMap = new Map();
-      const addLink = (srcId, tgtId, isConflict = false) => {
-        if (!nodeIdx.has(srcId) || !nodeIdx.has(tgtId)) return;
-        const key = `${srcId}→${tgtId}`;
-        const ex = linkMap.get(key);
-        if (ex) { ex.value += 1; if (isConflict) ex.isConflict = true; }
-        else linkMap.set(key, { source: nodeIdx.get(srcId), target: nodeIdx.get(tgtId), value: 1, isConflict });
-      };
+      function filterByDepth(nodes, links, depthLimit) {
+        const layout = createSankey()
+          .nodeId((d) => d.id)
+          .nodeAlign(sankeyLeft);
+        const graph = layout({
+          nodes: nodes.map((d) => ({ ...d })),
+          links: links.map((d) => ({ ...d })),
+        });
+        const allowed = new Set(
+          graph.nodes.filter((n) => (n.depth ?? 0) <= depthLimit - 1).map((n) => n.id)
+        );
+        return {
+          nodes: nodes.filter((n) => allowed.has(n.id)),
+          links: links.filter((l) => allowed.has(l.source) && allowed.has(l.target)),
+        };
+      }
 
-      for (const node of nodeArr) {
-        const srcDepth = node.pkgDepth;
-        if (srcDepth >= effectiveMax) continue;
+      function buildAncestorAllowed(nodes, links, predicate) {
+        const seeds = new Set(nodes.filter(predicate).map((n) => n.id));
+        const incoming = new Map();
+        for (const n of nodes) incoming.set(n.id, []);
+        for (const l of links) incoming.get(l.target)?.push(l.source);
+        return bfsReach(seeds, incoming);
+      }
 
-        const pkg = packages[node.pkgName];
-        const deps = [...(pkg?.deps ?? []), ...(includePeerDeps ? (pkg?.peerDeps ?? []) : [])];
-
-        for (const dep of deps) {
-          if (!(dep in depth)) continue;
-          if (!pkgIncluded(dep, depth[dep] ?? 0)) continue;
-          if (!nodeIdx.has(dep)) continue;
-
-          const targetDepth = nodeArr[nodeIdx.get(dep)].pkgDepth;
-          if (targetDepth <= srcDepth) continue; // Sankey must flow forward
-
-          // Ancestor nodes may only link to focusPkg or other ancestors —
-          // not to packages that are descendants of focusPkg.
-          if (focusAncestors && focusAncestors.has(node.pkgName)) {
-            const tgtPkgName = nodeArr[nodeIdx.get(dep)]?.pkgName;
-            if (tgtPkgName !== focusPkg && !focusAncestors.has(tgtPkgName)) continue;
+      function bfsReach(seeds, adj) {
+        const visited = new Set(seeds);
+        const queue = [...seeds];
+        let i = 0;
+        while (i < queue.length) {
+          for (const nb of (adj.get(queue[i++]) ?? [])) {
+            if (!visited.has(nb)) { visited.add(nb); queue.push(nb); }
           }
-
-          addLink(node.id, dep, conflictSet.has(dep));
         }
+        return visited;
       }
 
-      return { nodes: nodeArr, links: [...linkMap.values()], effectiveMax, maxActualDepth };
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       renderSankey
-       Draws D3 Sankey into the given container element.
-    ───────────────────────────────────────────────────────────── */
-    function renderSankey(container, sankeyData, { onNodeClick } = {}) {
-      container.innerHTML = '';
-      const { nodes: rawNodes, links: rawLinks, effectiveMax } = sankeyData;
-
-      if (!rawNodes.length) {
-        container.innerHTML =
-          '<p style="color:#475569;padding:3rem;text-align:center">Not enough linked dependency data to render a Sankey diagram.</p>';
-        return;
+      function computeTreeSizesFromLinks(nodes, links) {
+        const outgoing = new Map();
+        for (const n of nodes) outgoing.set(n.id, []);
+        for (const l of links) outgoing.get(l.source)?.push(l.target);
+        const sizes = new Map();
+        for (const node of nodes)
+          sizes.set(node.id, bfsReach(new Set([node.id]), outgoing).size - 1);
+        return sizes;
       }
 
-      // No links (e.g. depth=1): render nodes as a simple labelled list
-      if (!rawLinks.length) {
+      function computeTopPackages(nodes, treeSizeMap, topN = 5) {
+        const byName = new Map();
+        for (const n of nodes) {
+          const size = treeSizeMap.get(n.id) ?? 0;
+          if (!byName.has(n.name) || size > byName.get(n.name).treeSize)
+            byName.set(n.name, { name: n.name, treeSize: size });
+        }
+        return [...byName.values()]
+          .filter((p) => p.treeSize > 0)
+          .sort((a, b) => b.treeSize - a.treeSize)
+          .slice(0, topN);
+      }
+
+      /* ── Render ─────────────────────────────────────────────────────── */
+      function renderSankey(container, nodes, links, depthLimit, treeSizeMap, onNodeClick, vulnMap) {
+        container.innerHTML = '';
+
+        const visible =
+          depthLimit != null ? filterByDepth(nodes, links, depthLimit) : { nodes, links };
+        nodes = visible.nodes;
+        links = visible.links;
+
+        if (!nodes.length) {
+          container.innerHTML = NO_PACKAGES_MSG;
+          return;
+        }
+
+        if (!links.length) {
+          const wrap = document.createElement('div');
+          wrap.style.cssText =
+            'display:flex;flex-wrap:wrap;gap:8px;padding:24px;align-content:flex-start;';
+          for (const n of nodes) {
+            const tag = document.createElement('span');
+            const color = vulnMap?.has(n.id) ? vulnColor(vulnMap.get(n.id)) : n.isConflict ? '#c026d3' : '#6366f1';
+            tag.style.cssText = `display:inline-block;padding:4px 10px;border-radius:4px;font-size:12px;font-family:system-ui,sans-serif;border:1px solid ${color}44;color:#cbd5e1;background:${color}18;`;
+            tag.textContent = `${n.name}@${n.version}`;
+            wrap.appendChild(tag);
+          }
+          container.appendChild(wrap);
+          return;
+        }
+
         const W = Math.max(container.clientWidth || 900, 600);
-        const rowH = 28, gap = 5;
-        const H = Math.max(200, rawNodes.length * (rowH + gap) + 40);
-        const svg = d3.select(container)
-          .append('svg').attr('width', W).attr('height', H)
+        const H = Math.max(640, nodes.length * 22 + 60);
+
+        const svg = d3
+          .select(container)
+          .append('svg')
+          .attr('width', W)
+          .attr('height', H)
           .style('font-family', 'system-ui, sans-serif');
-        const groups = svg.append('g').selectAll('g').data(rawNodes).join('g')
-          .attr('transform', (d, i) => `translate(12, ${20 + i * (rowH + gap)})`)
-          .style('cursor', onNodeClick ? 'pointer' : 'default')
-          .on('mousemove', (ev, d) => showTip(ev, `
-              <div style="font-weight:600;color:#f1f5f9">${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ''}</div>
-              ${d.version ? `<div style="color:#64748b;font-size:11px">v${d.version}</div>` : ''}
-              ${onNodeClick ? '<div style="color:#475569;margin-top:4px;font-size:10px">Click to isolate</div>' : ''}
-            `))
-          .on('mouseleave', hideTip)
-          .on('click', (ev, d) => { ev.stopPropagation(); hideTip(); onNodeClick?.(d.pkgName); });
-        groups.append('rect')
-          .attr('width', 14).attr('height', rowH).attr('fill', d => depthColor(d)).attr('rx', 2);
-        groups.append('text')
-          .attr('x', 22).attr('y', rowH / 2).attr('dy', '0.35em')
-          .attr('fill', '#cbd5e1').attr('font-size', 13)
-          .text(d => {
-            const label = d.isRoot ? `${d.name} (root)` : d.name;
-            return label.length > 60 ? label.slice(0, 58) + '…' : label;
+
+        const layout = createSankey()
+          .nodeId((d) => d.id)
+          .nodeWidth(14)
+          .nodePadding(6)
+          .nodeAlign(sankeyLeft)
+          .extent([
+            [12, 12],
+            [W - 12, H - 12],
+          ]);
+
+        const graph = layout({
+          nodes: nodes.map((d) => ({ ...d })),
+          links: links.map((d) => ({ ...d })),
+        });
+
+        const defs = svg.append('defs');
+        ['LOW','MODERATE','HIGH','CRITICAL'].forEach((sev) => {
+          const color = SEVERITY_COLOR[sev];
+          const pat = defs.append('pattern')
+            .attr('id', `vp-${sev}`)
+            .attr('patternUnits', 'userSpaceOnUse')
+            .attr('width', 8).attr('height', 8)
+            .attr('patternTransform', 'rotate(45 0 0)');
+          pat.append('rect').attr('width', 8).attr('height', 8).attr('fill', color);
+          pat.append('rect').attr('width', 2).attr('height', 8).attr('fill', '#000').attr('opacity', 0.5);
+        });
+
+        svg
+          .append('g')
+          .selectAll('path')
+          .data(graph.links)
+          .join('path')
+          .attr('class', (d) => `sankey-link${d.isPeer ? ' peer' : ''}`)
+          .attr('d', sankeyLinkHorizontal())
+          .attr('stroke', (d) => (d.target.isConflict ? '#c026d3' : depthColor(d.source)))
+          .attr('stroke-width', (d) => Math.max(1, d.width))
+          .on('mousemove', (ev, d) =>
+            showTip(
+              ev,
+              `<span style="color:#94a3b8">${d.source.name}</span> <span style="color:#475569">→</span> <span style="color:#94a3b8">${d.target.name}</span>${d.isPeer ? ' <span style="color:#7c3aed;font-size:10px">(peer)</span>' : ''}`
+            )
+          )
+          .on('mouseleave', hideTip);
+
+        const nodeG = svg
+          .append('g')
+          .selectAll('g')
+          .data(graph.nodes)
+          .join('g')
+          .attr('transform', (d) => `translate(${d.x0},${d.y0})`);
+
+        nodeG
+          .append('rect')
+          .attr('height', (d) => Math.max(3, d.y1 - d.y0))
+          .attr('width', (d) => d.x1 - d.x0)
+          .attr('rx', 2)
+          .attr('fill', (d) => {
+            const vulns = vulnMap?.get(d.id);
+            if (!vulns) return depthColor(d);
+            const sev = worstSeverity(vulns) ?? 'CRITICAL';
+            return `url(#vp-${sev})`;
           });
-        return;
-      }
 
-      const W = Math.max(container.clientWidth || 900, 600);
-      const H = Math.max(640, rawNodes.length * 22 + 60);
+        nodeG
+          .append('text')
+          .attr('x', (d) => (d.x0 < W / 2 ? d.x1 - d.x0 + 6 : -6))
+          .attr('y', (d) => (d.y1 - d.y0) / 2)
+          .attr('dy', '0.35em')
+          .attr('text-anchor', (d) => (d.x0 < W / 2 ? 'start' : 'end'))
+          .attr('fill', '#cbd5e1')
+          .attr('font-size', 11)
+          .text((d) => {
+            const l = d.isRoot ? `${d.name} (root)` : d.name;
+            return l.length > 32 ? l.slice(0, 30) + '…' : l;
+          });
 
-      const svg = d3.select(container)
-        .append('svg')
-        .attr('width', W)
-        .attr('height', H)
-        .style('font-family', 'system-ui, sans-serif');
-
-      const layout = createSankey()
-        .nodeWidth(14)
-        .nodePadding(7)
-        .nodeAlign(d => d.pkgDepth - 1)
-        .extent([[12, 12], [W - 12, H - 12]]);
-
-      // d3-sankey mutates its inputs — pass clones
-      const graph = layout({
-        nodes: rawNodes.map(d => ({ ...d })),
-        links: rawLinks.map(d => ({ ...d })),
-      });
-
-      /* Links */
-      svg.append('g')
-        .selectAll('path')
-        .data(graph.links)
-        .join('path')
-        .attr('class', 'sankey-link')
-        .attr('d', sankeyLinkHorizontal())
-        .attr('stroke', d => d.isConflict ? '#c026d3' : depthColor(d.source))
-        .attr('stroke-width', d => Math.max(1, d.width))
-        .on('mousemove', (ev, d) =>
-          showTip(ev, `<span style="color:#94a3b8">${d.source.name}</span>
-              <span style="color:#475569"> → </span>
-              <span style="color:#94a3b8">${d.target.name}</span>`)
-        )
-        .on('mouseleave', hideTip);
-
-      /* Node groups */
-      const nodeG = svg.append('g')
-        .selectAll('g')
-        .data(graph.nodes)
-        .join('g')
-        .attr('transform', d => `translate(${d.x0},${d.y0})`);
-
-      /* Rects */
-      nodeG.append('rect')
-        .attr('height', d => Math.max(2, d.y1 - d.y0))
-        .attr('width', d => d.x1 - d.x0)
-        .attr('fill', d => depthColor(d))
-        .attr('rx', 2);
-
-      /* Labels */
-      nodeG.append('text')
-        .attr('x', d => d.x0 < W / 2 ? (d.x1 - d.x0) + 6 : -6)
-        .attr('y', d => (d.y1 - d.y0) / 2)
-        .attr('dy', '0.35em')
-        .attr('text-anchor', d => d.x0 < W / 2 ? 'start' : 'end')
-        .attr('fill', '#cbd5e1')
-        .attr('font-size', 11)
-        .text(d => {
-          const label = d.isRoot ? `${d.name} (root)` : d.name;
-          return label.length > 32 ? label.slice(0, 30) + '…' : label;
-        });
-
-      /* Node tooltips + click-to-focus */
-      nodeG
-        .style('cursor', onNodeClick ? 'pointer' : 'default')
-        .on('mousemove', (ev, d) => {
-          const into = d.targetLinks?.length ?? 0;
-          const tree = d.treeSize ?? 0;
-          showTip(ev, `
-              <div style="font-weight:600;color:#f1f5f9;margin-bottom:2px">
-                ${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ''}
-              </div>
-              ${d.versions
-              ? `<div style="color:#c026d3;font-size:11px;margin-bottom:6px">${d.versions.length} versions: ${d.versions.join(', ')}</div>`
-              : (d.version ? `<div style="color:#64748b;font-size:11px;margin-bottom:6px">v${d.version}</div>` : '')}
-              <div style="color:#64748b">Depth <span style="color:#94a3b8">${d.pkgDepth}</span></div>
+        nodeG
+          .style('cursor', (d) => (d.isRoot || !onNodeClick ? 'default' : 'pointer'))
+          .on('mousemove', (ev, d) => {
+            const into = d.targetLinks?.length ?? 0;
+            const treeSize = treeSizeMap.get(d.id) ?? 0;
+            const typeLabel = d.isPeer
+              ? '<span style="color:#7c3aed">peer</span>'
+              : d.dev
+                ? '<span style="color:#64748b">dev</span>'
+                : '<span style="color:#10b981">prod</span>';
+            const versionLine = d.isConflict && d.conflictVersions?.length
+              ? `<div style="color:#c026d3;font-size:11px">${d.conflictVersions.length} versions: ${d.conflictVersions.join(', ')}</div>`
+              : `<div style="color:#64748b;font-size:11px">v${d.version}</div>`;
+            const nodeVulns = vulnMap?.get(d.id) ?? [];
+            const vulnHtml = nodeVulns.length
+              ? (() => {
+                  const color = vulnColor(nodeVulns);
+                  return `<div style="color:${color};margin-top:6px;padding-top:6px;border-top:1px solid #334155;font-weight:600">⚠ ${nodeVulns.length} vulnerability${nodeVulns.length !== 1 ? 'ies' : ''}</div>
+              ${nodeVulns.slice(0, 3).map((v) => {
+                const sev = getSeverity(v);
+                const sevColor = sev ? (SEVERITY_COLOR[sev] ?? '#fca5a5') : '#fca5a5';
+                return `<div style="font-size:10px;margin-top:2px"><a href="https://osv.dev/vulnerability/${v.id}" target="_blank" rel="noopener" style="color:#94a3b8;text-decoration:underline;text-decoration-color:#475569;text-underline-offset:2px">${v.id}</a>${sev ? ` · <span style="color:${sevColor};font-weight:600">${sev}</span>` : ''}</div>`;
+              }).join('')}
+              ${nodeVulns.length > 3 ? `<div style="font-size:10px;color:#64748b">+${nodeVulns.length - 3} more</div>` : ''}`;
+                })()
+              : '';
+            showTip(
+              ev,
+              `<div style="font-weight:600;color:#f1f5f9">${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ''}</div>
+              ${versionLine}
+              <div style="color:#64748b;margin-top:4px">Depth <span style="color:#94a3b8">${d.depth ?? 0}</span></div>
               <div style="color:#64748b">Used by <span style="color:#94a3b8">${into}</span> pkg${into !== 1 ? 's' : ''}</div>
-              <div style="color:#64748b">Tree size <span style="color:#94a3b8">${tree}</span> pkg${tree !== 1 ? 's' : ''}</div>
-              ${onNodeClick ? '<div style="color:#475569;margin-top:4px;font-size:10px">Click to isolate</div>' : ''}
-            `);
-        })
-        .on('mouseleave', hideTip)
-        .on('click', (ev, d) => {
-          ev.stopPropagation();
-          hideTip();
-          onNodeClick?.(d.pkgName);
-        });
-    }
-
-    /* ─────────────────────────────────────────────────────────────
-       PkgLockVisualizer — Lit component
-    ───────────────────────────────────────────────────────────── */
-    class PkgLockVisualizer extends LitElement {
-      static properties = {
-        _phase: { state: true },
-        _data: { state: true },
-        _maxDepth: { state: true },
-        _filter: { state: true },
-        _focusPkg: { state: true },
-        _error: { state: true },
-        _search: { state: true },
-        _searchOpen: { state: true },
-      };
-
-      createRenderRoot() { return this; }
-
-      constructor() {
-        super();
-        this._phase = 'idle';
-        this._data = null;
-        this._maxDepth = 3;
-        this._filter = 'all';
-        this._focusPkg = null;
-        this._error = '';
-        this._search = '';
-        this._searchOpen = false;
+              <div style="color:#64748b">Tree size <span style="color:#94a3b8">${treeSize}</span> pkg${treeSize !== 1 ? 's' : ''}</div>
+              ${!d.isRoot ? `<div style="color:#64748b">${typeLabel}</div>` : ''}
+              ${vulnHtml}
+              ${!d.isRoot ? '<div style="color:#475569;font-size:11px;margin-top:4px">Click to isolate</div>' : ''}`
+            );
+          })
+          .on('mouseleave', hideTip)
+          .on('click', (ev, d) => {
+            if (d.isRoot || !onNodeClick) return;
+            hideTip();
+            onNodeClick(d.name);
+          });
       }
 
-      /* ── Drag-and-drop ── */
-      _onDragOver(e) {
-        e.preventDefault();
-        this.querySelector('.drop-zone')?.classList.add('drag-over');
-      }
-      _onDragLeave() {
-        this.querySelector('.drop-zone')?.classList.remove('drag-over');
-      }
-      _onDrop(e) {
-        e.preventDefault();
-        this.querySelector('.drop-zone')?.classList.remove('drag-over');
-        this._loadFile(e.dataTransfer?.files?.[0]);
-      }
-      _onFileInput(e) { this._loadFile(e.target.files?.[0]); }
+      /* ── Lit component ──────────────────────────────────────────────── */
+      class PkgLockVisualizer extends LitElement {
+        static properties = {
+          _phase: { state: true },
+          _data: { state: true },
+          _error: { state: true },
+          _maxDepth: { state: true },
+          _selectedDepth: { state: true },
+          _filter: { state: true },
+          _conflictCount: { state: true },
+          _searchQuery: { state: true },
+          _visibleCount: { state: true },
+          _suggestions: { state: true },
+          _inputFocused: { state: true },
+          _focusedPackage: { state: true },
+          _topPackages: { state: true },
+          _showInfo: { state: true },
+          _savedFiles: { state: true },
+          _vulnMap: { state: true },
+          _vulnStatus: { state: true },
+        };
 
-      _loadFile(file) {
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
+        createRenderRoot() {
+          return this;
+        }
+
+        constructor() {
+          super();
+          this._phase = 'idle';
+          this._data = null;
+          this._error = '';
+          this._maxDepth = null;
+          this._selectedDepth = null;
+          this._filter = 'all';
+          this._conflictCount = 0;
+          this._searchQuery = '';
+          this._visibleCount = 0;
+          this._suggestions = [];
+          this._inputFocused = false;
+          this._focusedPackage = null;
+          this._topPackages = null;
+          this._showInfo = false;
+          this._savedFiles = [];
+          this._vulnMap = null;
+          this._vulnStatus = 'idle';
+          this._osvRequestId = 0;
+        }
+
+        connectedCallback() {
+          super.connectedCallback();
+          this._loadSavedFiles();
+        }
+
+        _onDragOver(e) {
+          e.preventDefault();
+          this.querySelector('.drop-zone')?.classList.add('drag-over');
+        }
+        _onDragLeave() {
+          this.querySelector('.drop-zone')?.classList.remove('drag-over');
+        }
+        _onDrop(e) {
+          e.preventDefault();
+          this.querySelector('.drop-zone')?.classList.remove('drag-over');
+          this._loadFile(e.dataTransfer?.files?.[0]);
+        }
+        _onFileInput(e) {
+          this._loadFile(e.target.files?.[0]);
+        }
+
+        _loadJson(json) {
           try {
-            const json = JSON.parse(e.target.result);
             if (!json.dependencies && !json.packages) {
-              throw new Error('Missing dependencies/packages field — is this a package-lock.json?');
+              throw new Error(
+                'Missing dependencies/packages field — is this a package-lock.json?'
+              );
             }
-            this._data = parseLockfile(json);
-            const { depth: _d } = computeDepths(this._data.packages, this._data.name);
-            const _vals = Object.values(_d);
-            this._data.maxActualDepth = _vals.length > 1 ? Math.max(..._vals) : 0;
-            this._maxDepth = this._data.maxActualDepth;
+            const data = buildSankeyData(json);
+            const rootId = data.nodes.find((n) => n.isRoot)?.id;
+            const depthNodes = data.nodes.filter((n) => !n.isRoot);
+            const depthLinks = data.links.filter((l) => l.source !== rootId);
+            const maxDepth = computeMaxDepth(depthNodes, depthLinks);
+            this._data = data;
+            this._maxDepth = maxDepth;
+            this._selectedDepth = maxDepth;
+            this._conflictCount = data.nodes.filter((n) => n.isConflict).length;
+            this._filter = 'all';
+            this._searchQuery = '';
+            this._visibleCount = 0;
+            this._focusedPackage = null;
+            this._vulnMap = null;
+            this._vulnStatus = 'loading';
             this._phase = 'loaded';
-            this._focusPkg = null;
-            this._search = '';
-            this._searchOpen = false;
             this._error = '';
-            document.title = `Package Lock Visualizer — ${this._data.name}`;
+            document.title = `Package Lock Visualizer — ${data.name}`;
             this.requestUpdate();
-            this.updateComplete.then(() => this._draw());
+            this._redraw();
+            const reqId = ++this._osvRequestId;
+            this._queryOSV(data.nodes, reqId);
           } catch (err) {
+            console.error(err);
             this._error = err.message;
             this._phase = 'error';
           }
-        };
-        reader.readAsText(file);
-      }
+        }
 
-      _draw() {
-        const container = this.querySelector('#sankey-container');
-        if (!container || !this._data) return;
-        const conflictSet = new Set((this._data.duplicates ?? []).map(d => d.name));
-        const sankeyData = buildSankeyData(
-          this._data.packages, this._data.name, this._maxDepth,
-          { filter: this._filter, conflictSet, pathIndex: this._data.pathIndex ?? new Map(), focusPkg: this._focusPkg, includePeerDeps: false }
-        );
-        renderSankey(container, sankeyData, {
-          onNodeClick: (pkgName) => this._focusPackage(pkgName),
-        });
-      }
+        _loadFile(file) {
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              const raw = e.target.result;
+              this._loadJson(JSON.parse(raw));
+              this._saveFile(file.name, raw);
+            } catch (err) {
+              console.error(err);
+              this._error = err.message;
+              this._phase = 'error';
+            }
+          };
+          reader.readAsText(file);
+        }
 
-      _onMaxDepthChange(e) {
-        this._maxDepth = +e.target.value;
-        if (this._phase === 'loaded') this.updateComplete.then(() => this._draw());
-      }
+        async _queryOSV(nodes, requestId) {
+          const isSemverLike = (v) => /^v?\d+\.\d/.test(v);
+          const byId = new Map(
+            nodes.filter((n) => !n.isRoot && isSemverLike(n.version)).map((n) => [n.id, n])
+          );
+          const nodeList = [...byId.values()];
+          const CHUNK = 1000;
+          const vulnMap = new Map();
+          try {
+            // Phase 1: batch query → get compact stub objects (id + modified only)
+            for (let i = 0; i < nodeList.length; i += CHUNK) {
+              const chunk = nodeList.slice(i, i + CHUNK);
+              const res = await fetch('https://api.osv.dev/v1/querybatch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  queries: chunk.map((n) => ({
+                    version: n.version,
+                    package: { name: n.name, ecosystem: 'npm' },
+                  })),
+                }),
+              });
+              if (!res.ok) throw new Error(`OSV ${res.status}`);
+              const { results } = await res.json();
+              if (this._osvRequestId !== requestId) return;
+              for (let j = 0; j < chunk.length; j++) {
+                const vulns = results[j]?.vulns ?? [];
+                if (vulns.length) vulnMap.set(chunk[j].id, vulns);
+              }
+            }
 
-      _onFilterChange(e) {
-        this._filter = e.target.value;
-        if (this._phase === 'loaded') this.updateComplete.then(() => this._draw());
-      }
+            // Phase 2: fetch full vuln details (severity, CVSS, etc.) for each unique ID
+            const uniqueIds = [...new Set([...vulnMap.values()].flat().map((v) => v.id))];
+            const CONCURRENCY = 10;
+            const fullById = new Map();
+            for (let i = 0; i < uniqueIds.length; i += CONCURRENCY) {
+              const batch = uniqueIds.slice(i, i + CONCURRENCY);
+              const fetched = await Promise.all(
+                batch.map((id) =>
+                  fetch(`https://api.osv.dev/v1/vulns/${id}`)
+                    .then((r) => (r.ok ? r.json() : null))
+                    .catch(() => null)
+                )
+              );
+              if (this._osvRequestId !== requestId) return;
+              for (const v of fetched) if (v) fullById.set(v.id, v);
+            }
 
-      _focusPackage(pkgName) {
-        this._focusPkg = this._focusPkg === pkgName ? null : pkgName;
-        this._search = this._focusPkg ?? '';
-        this._searchOpen = false;
-        this.requestUpdate();
-        this.updateComplete.then(() => this._draw());
-      }
+            // Replace stubs with full objects
+            for (const [nodeId, vulns] of vulnMap) {
+              vulnMap.set(nodeId, vulns.map((v) => fullById.get(v.id) ?? v));
+            }
 
-      get _suggestions() {
-        if (!this._data || !this._search) return [];
-        const q = this._search.toLowerCase();
-        const conflictNames = new Set((this._data.duplicates ?? []).map(d => d.name));
-        return Object.keys(this._data.packages)
-          .filter(n => n !== this._data.name && n.toLowerCase().includes(q))
-          .sort((a, b) => {
-            const al = a.toLowerCase(), bl = b.toLowerCase();
-            if (al === q) return -1;
-            if (bl === q) return 1;
-            if (al.startsWith(q) && !bl.startsWith(q)) return -1;
-            if (bl.startsWith(q) && !al.startsWith(q)) return 1;
-            return a.localeCompare(b);
-          })
-          .slice(0, 20)
-          .map(name => ({ name, isConflict: conflictNames.has(name) }));
-      }
+            if (this._osvRequestId !== requestId) return;
+            this._vulnMap = vulnMap;
+            this._vulnStatus = 'done';
+            this.requestUpdate();
+            this._redraw();
+          } catch (err) {
+            if (this._osvRequestId !== requestId) return;
+            console.error('OSV query failed:', err);
+            this._vulnStatus = 'error';
+            this.requestUpdate();
+          }
+        }
 
-      _onSearchInput(e) {
-        this._search = e.target.value;
-        this._searchOpen = !!this._search;
-        if (!this._search) {
-          this._focusPkg = null;
-          this.requestUpdate();
+        _loadSavedFiles() {
+          try {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            this._savedFiles = stored ? JSON.parse(stored) : [];
+          } catch {
+            this._savedFiles = [];
+          }
+        }
+
+        _saveFile(filename, raw) {
+          try {
+            const { name, installPaths } = this._data;
+            const entry = {
+              id: crypto.randomUUID(),
+              name,
+              filename,
+              pkgCount: installPaths,
+              savedAt: new Date().toISOString(),
+              raw,
+            };
+            const updated = [entry, ...this._savedFiles.filter((f) => f.name !== name)].slice(0, 10);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            this._savedFiles = updated;
+          } catch {
+            // storage quota exceeded or unavailable
+          }
+        }
+
+        _deleteFile(id, e) {
+          e.stopPropagation();
+          const updated = this._savedFiles.filter((f) => f.id !== id);
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          } catch {
+            // storage quota exceeded or unavailable
+          }
+          this._savedFiles = updated;
+        }
+
+        _getFilteredData() {
+          const rootId = this._data.nodes.find((n) => n.isRoot)?.id;
+          let nodes = this._data.nodes.filter((n) => !n.isRoot);
+          let links = this._data.links.filter((l) => l.source !== rootId);
+
+          if (this._filter !== 'all') {
+            let allowed;
+            if (this._filter === 'prod')
+              allowed = new Set(nodes.filter((n) => !n.dev).map((n) => n.id));
+            else if (this._filter === 'dev')
+              allowed = new Set(nodes.filter((n) => n.dev).map((n) => n.id));
+            else if (this._filter === 'conflict')
+              allowed = buildAncestorAllowed(nodes, links, (n) => n.isConflict);
+            else if (this._filter === 'vuln')
+              allowed = buildAncestorAllowed(nodes, links, (n) => this._vulnMap?.has(n.id));
+            nodes = nodes.filter((n) => allowed.has(n.id));
+            links = links.filter((l) => allowed.has(l.source) && allowed.has(l.target));
+          }
+
+          if (this._focusedPackage) {
+            return this._getFocusSubgraph(nodes, links);
+          }
+
+          return { nodes, links };
+        }
+
+        _redraw() {
           this.updateComplete.then(() => this._draw());
         }
-      }
 
-      _selectSearch(name) {
-        this._focusPackage(name);
-      }
+        _draw() {
+          const container = this.querySelector('#sankey-container');
+          if (!container || !this._data) return;
 
-      _clearSearch() {
-        this._search = '';
-        this._searchOpen = false;
-        this._focusPkg = null;
-        this.requestUpdate();
-        this.updateComplete.then(() => this._draw());
-      }
-
-      _onSearchKey(e) {
-        if (e.key === 'Escape') {
-          this._clearSearch();
-        } else if (e.key === 'Enter' && this._suggestions.length) {
-          this._selectSearch(this._suggestions[0].name);
+          const { nodes, links } = this._getFilteredData();
+          const treeSizeMap = computeTreeSizesFromLinks(nodes, links);
+          const newTop = computeTopPackages(nodes, treeSizeMap);
+          const topKey = newTop.map((p) => `${p.name}:${p.treeSize}`).join(',');
+          const curKey = (this._topPackages ?? []).map((p) => `${p.name}:${p.treeSize}`).join(',');
+          if (topKey !== curKey) this._topPackages = newTop;
+          const useListView = this._selectedDepth === 1 && !this._focusedPackage;
+          if (useListView) {
+            const directNodes = nodes.filter((n) => this._data.rootDeps.has(n.name));
+            this._drawDepth1List(container, directNodes, treeSizeMap);
+            if (this._visibleCount !== directNodes.length) this._visibleCount = directNodes.length;
+          } else {
+            container.style.minHeight = '640px';
+            renderSankey(container, nodes, links, this._selectedDepth, treeSizeMap, (name) => this._focusPackage(name), this._vulnMap);
+            if (this._visibleCount !== nodes.length) this._visibleCount = nodes.length;
+          }
         }
-      }
 
-      _reset() {
-        this._phase = 'idle';
-        this._data = null;
-        this._filter = 'all';
-        this._focusPkg = null;
-        this._error = '';
-        this._search = '';
-        this._searchOpen = false;
-        document.title = 'Package Lock Visualizer';
-        hideTip();
-      }
+        _focusPackage(name) {
+          if (this._focusedPackage === name) {
+            this._clearSearch();
+            return;
+          }
+          this._searchQuery = name;
+          this._focusedPackage = name;
+          this._selectedDepth = this._maxDepth;
+          this._inputFocused = false;
+          this._suggestions = [];
+          this._redraw();
+        }
 
-      _stats() {
-        if (!this._data) return null;
-        const { packages, name, duplicates } = this._data;
-        const { depth, bfsParent } = computeDepths(packages, name);
-        const conflictSet = new Set((duplicates ?? []).map(d => d.name));
-        const focusSubgraph = this._focusPkg
-          ? computeFocusSubgraph(packages, depth, this._focusPkg, bfsParent, conflictSet).subgraph
-          : null;
+        _onDepthChange(e) {
+          this._selectedDepth = Number(e.target.value);
+          this._redraw();
+        }
 
-        const included = ([id]) => {
-          if (id === name) return false;
-          if (focusSubgraph && !focusSubgraph.has(id)) return false;
-          if (this._filter === 'prod') return !packages[id]?.dev;
-          if (this._filter === 'dev') return packages[id]?.dev === true;
-          if (this._filter === 'conflicts') return conflictSet.has(id);
-          return true;
-        };
+        _setFilter(value) {
+          this._filter = this._filter === value ? 'all' : value;
+          this._redraw();
+        }
 
-        const entries = Object.entries(depth).filter(included);
-        const total = entries.length;
-        const maxD = entries.length ? Math.max(...entries.map(([, d]) => d)) : 0;
-        const topPkgs = Object.entries(depth)
-          .filter(included)
-          .map(([id]) => [id, computeTreeSize(id, packages)])
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5);
-        return { total, maxD, topPkgs };
-      }
+        _renderVulnStatus() {
+          if (this._vulnStatus === 'loading')
+            return html`<span class="text-xs text-slate-500 select-none animate-pulse">Running audit…</span>`;
+          if (this._vulnStatus === 'done' && this._vulnMap?.size)
+            return html`<button @click=${() => this._setFilter('vuln')} class="text-xs font-semibold select-none cursor-pointer transition-opacity hover:opacity-70" style="color:#ef4444;background:none;border:none;padding:0">⚠ audit: ${this._vulnMap.size}</button>`;
+          if (this._vulnStatus === 'done')
+            return html`<span class="text-xs select-none" style="color:#10b981">✓ audit clean</span>`;
+          if (this._vulnStatus === 'error')
+            return html`<span class="text-xs text-slate-600 select-none">OSV unavailable</span>`;
+          return '';
+        }
 
-      render() {
-        const stats = this._data ? this._stats() : null;
-        const DEPTH_LABELS = ['Root', 'Direct', 'Depth 2', 'Depth 3', 'Depth 4', 'Depth 5', 'Depth 6+'];
+        _computeSuggestions(q) {
+          if (!q || !this._data) return [];
+          const lower = q.toLowerCase();
+          const seen = new Map();
+          for (const n of this._data.nodes) {
+            if (n.isRoot) continue;
+            if (!n.nameLower.includes(lower)) continue;
+            if (!seen.has(n.name) || (n.isConflict && !seen.get(n.name).isConflict))
+              seen.set(n.name, { name: n.name, isConflict: n.isConflict });
+          }
+          return [...seen.values()]
+            .sort((a, b) => {
+              const aExact = a.name.toLowerCase() === lower;
+              const bExact = b.name.toLowerCase() === lower;
+              if (aExact !== bExact) return aExact ? -1 : 1;
+              const aStart = a.name.toLowerCase().startsWith(lower);
+              const bStart = b.name.toLowerCase().startsWith(lower);
+              if (aStart !== bStart) return aStart ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            })
+            .slice(0, 10);
+        }
 
-        return html`
-            <div class="min-h-screen bg-slate-900 text-slate-100 p-6">
-              <div class="max-w-screen-xl mx-auto">
+        _onSearchInput(e) {
+          this._searchQuery = e.target.value;
+          this._focusedPackage = null;
+          this._suggestions = this._computeSuggestions(this._searchQuery);
+        }
 
-                <!-- Header -->
-                ${!this._data ? html`
-                  <header class="mb-8">
-                    <h1 class="text-2xl font-semibold tracking-tight">Package Lock Visualizer</h1>
-                    <p class="text-slate-400 text-sm mt-1">
-                      Upload a
-                      <code class="text-blue-400 bg-blue-400/10 px-1.5 py-0.5 rounded text-xs">package-lock.json</code>
-                      to explore dependency depth as a Sankey diagram
-                    </p>
-                  </header>
-                ` : html`
-                  <header class="mb-8 flex items-start justify-between">
-                    <div>
-                      ${this._data.packages[this._data.name]?.version ? html`
-                        <div class="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">
-                          v${this._data.packages[this._data.name].version}
-                        </div>
-                      ` : ''}
-                      <h1 class="text-2xl font-semibold tracking-tight text-slate-100">${this._data.name}</h1>
-                    </div>
-                    <span class="text-slate-600 text-sm font-medium mt-1.5 select-none">Package Lock Visualizer</span>
-                  </header>
-                `}
+        _onSearchFocus() {
+          this._inputFocused = true;
+        }
 
-                <!-- Upload / error zone -->
-                ${this._phase !== 'loaded' ? html`
-                  <div
-                    class="drop-zone border-2 border-dashed border-slate-700 rounded-xl p-20 text-center cursor-pointer
-                           hover:border-blue-500 hover:bg-blue-950/25 transition-all select-none"
-                    @dragover=${this._onDragOver}
-                    @dragleave=${this._onDragLeave}
-                    @drop=${this._onDrop}
-                    @click=${() => this.querySelector('#file-input').click()}
-                  >
-                    <div class="text-5xl mb-5">📦</div>
-                    <p class="text-slate-200 font-medium text-lg">Drop your package-lock.json here</p>
-                    <p class="text-slate-500 text-sm mt-2">or click to browse</p>
-                    ${this._error ? html`
-                      <p class="text-red-400 text-sm mt-6 max-w-md mx-auto bg-red-950/40 border border-red-900/50 rounded-lg p-3">
-                        ${this._error}
-                      </p>
-                    ` : ''}
-                    <input id="file-input" type="file" accept=".json" class="hidden" @change=${this._onFileInput} />
-                  </div>
-                ` : ''}
+        _onSearchBlur() {
+          setTimeout(() => { this._inputFocused = false; }, 120);
+        }
 
-                <!-- Loaded state -->
-                ${this._phase === 'loaded' ? html`
+        _clearSearch() {
+          this._searchQuery = '';
+          this._focusedPackage = null;
+          this._inputFocused = false;
+          this._suggestions = [];
+          this._redraw();
+        }
 
-                  <!-- Toolbar -->
-                  <div class="flex flex-wrap items-center gap-3 mb-5 bg-slate-900/95 backdrop-blur-sm border-b border-slate-700/60 -mx-4 px-4 py-3 sticky top-0 z-20">
+        _getFocusSubgraph(nodes, links) {
+          const seedIds = new Set(
+            nodes.filter((n) => n.name === this._focusedPackage).map((n) => n.id)
+          );
 
-                    <div class="flex items-center gap-2 text-sm">
-                      <label class="text-slate-400">Depth</label>
-                      <select
-                        @change=${this._onMaxDepthChange}
-                        class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm
-                               focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                      >
-                        ${Array.from({ length: this._data.maxActualDepth }, (_, i) => i + 1).map(d => html`
-                          <option value=${d} ?selected=${this._maxDepth === d}>${d}</option>
-                        `)}
-                      </select>
-                    </div>
+          const incoming = new Map();
+          const outgoing = new Map();
+          for (const n of nodes) { incoming.set(n.id, []); outgoing.set(n.id, []); }
+          for (const l of links) {
+            incoming.get(l.target)?.push(l.source);
+            outgoing.get(l.source)?.push(l.target);
+          }
 
-                    <div class="w-px h-4 bg-slate-700"></div>
+          const ancestors = bfsReach(seedIds, incoming);
+          const descendants = bfsReach(seedIds, outgoing);
+          const allowed = new Set([...ancestors, ...descendants]);
+          return {
+            nodes: nodes.filter((n) => allowed.has(n.id)),
+            links: links.filter((l) => allowed.has(l.source) && allowed.has(l.target)),
+          };
+        }
 
-                    <div class="flex items-center gap-2 text-sm">
-                      <label class="text-slate-400">Show</label>
-                      <select
-                        @change=${this._onFilterChange}
-                        class="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-sm
-                               focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
-                      >
-                        <option value="all"       ?selected=${this._filter === 'all'}>All packages</option>
-                        <option value="prod"      ?selected=${this._filter === 'prod'}>Prod only</option>
-                        <option value="dev"       ?selected=${this._filter === 'dev'}>Dev only</option>
-                        ${this._data.duplicates?.length ? html`
-                          <option value="conflicts" ?selected=${this._filter === 'conflicts'}>Conflict paths (${this._data.duplicates.length})</option>
-                        ` : ''}
-                      </select>
-                    </div>
+        _setDepthFromLegend(colorIndex) {
+          const depth =
+            colorIndex >= DEPTH_COLORS.length - 1
+              ? this._maxDepth
+              : Math.min(colorIndex + 1, this._maxDepth);
+          this._selectedDepth = depth;
+          this._redraw();
+        }
 
-                    <div class="relative">
-                      <div class="flex items-center gap-1.5 rounded px-2 py-1
-                                  ${this._focusPkg
-              ? 'bg-blue-900/30 border border-blue-600/60'
-              : 'bg-slate-700 border border-slate-600'}">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
-                             fill="none" stroke="currentColor" stroke-width="2.5"
-                             stroke-linecap="round" stroke-linejoin="round"
-                             class="${this._focusPkg ? 'text-blue-400' : 'text-slate-500'}">
-                          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                        </svg>
-                        <input
-                          type="text"
-                          .value=${this._search}
-                          @input=${this._onSearchInput}
-                          @focus=${() => { if (this._search) this._searchOpen = true; }}
-                          @blur=${() => setTimeout(() => { this._searchOpen = false; }, 150)}
-                          @keydown=${this._onSearchKey}
-                          placeholder="Filter package…"
-                          class="bg-transparent text-sm outline-none w-40
-                                 ${this._focusPkg ? 'text-blue-200' : 'text-slate-200'}
-                                 placeholder-slate-500"
-                        />
-                        ${this._search ? html`
-                          <button
-                            @click=${this._clearSearch}
-                            class="text-slate-500 hover:text-white leading-none cursor-pointer text-xs"
-                            title="Clear"
-                          >✕</button>
-                        ` : ''}
-                      </div>
-                      ${this._searchOpen && this._suggestions.length ? html`
-                        <div class="absolute top-full mt-1 left-0 bg-slate-800 border border-slate-600
-                                    rounded-lg shadow-xl z-50 w-72 max-h-64 overflow-y-auto">
-                          ${this._suggestions.map(({ name, isConflict }) => html`
-                            <button
-                              class="w-full text-left px-3 py-2 text-sm hover:bg-slate-700 flex items-center gap-2
-                                     ${name === this._focusPkg ? 'bg-blue-900/30' : ''}"
-                              @mousedown=${(e) => { e.preventDefault(); this._selectSearch(name); }}
+        _drawDepth1List(container, nodes, treeSizeMap) {
+          container.innerHTML = '';
+          container.style.minHeight = '';
+
+          if (!nodes.length) {
+            container.innerHTML = NO_PACKAGES_MSG;
+            return;
+          }
+
+          const { rootDeps } = this._data;
+          const groups = { prod: [], dev: [], peer: [], optional: [] };
+          for (const node of nodes) {
+            const type = rootDeps.get(node.name) ?? (node.dev ? 'dev' : 'prod');
+            groups[type].push({ ...node, treeSize: treeSizeMap.get(node.id) ?? 0 });
+          }
+          for (const list of Object.values(groups)) {
+            list.sort((a, b) => b.treeSize - a.treeSize || a.name.localeCompare(b.name));
+          }
+
+          const maxSize = Math.max(1, ...nodes.map((n) => treeSizeMap.get(n.id) ?? 0));
+
+          const groupConfig = [
+            { key: 'prod', label: 'Production', color: '#10b981' },
+            { key: 'dev', label: 'Development', color: '#6366f1' },
+            { key: 'peer', label: 'Peer', color: '#a78bfa' },
+            { key: 'optional', label: 'Optional', color: '#f59e0b' },
+          ];
+
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'padding:8px 0;font-family:system-ui,sans-serif';
+
+          for (const { key, label, color } of groupConfig) {
+            const list = groups[key];
+            if (!list.length) continue;
+
+            const section = document.createElement('div');
+            section.style.cssText = 'margin-bottom:24px';
+
+            const hdr = document.createElement('div');
+            hdr.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:6px';
+            hdr.innerHTML = `
+              <span style="color:${color};font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em">${label}</span>
+              <span style="color:#334155;font-size:11px">${list.length}</span>
+              <div style="flex:1;height:1px;background:#1e293b"></div>
+            `;
+            section.appendChild(hdr);
+
+            for (const pkg of list) {
+              const row = document.createElement('div');
+              row.style.cssText = `
+                display:grid;grid-template-columns:1fr 100px 68px;
+                align-items:center;gap:10px;
+                padding:7px 10px;margin-bottom:3px;
+                border-radius:7px;cursor:pointer;
+                border:1px solid transparent;background:transparent;
+                transition:background .1s,border-color .1s;
+              `;
+
+              const pkgVulns = this._vulnMap?.get(pkg.id) ?? [];
+              const pkgWorstSev = pkgVulns.length ? worstSeverity(pkgVulns) : null;
+              const pkgVulnColor = pkgWorstSev ? SEVERITY_COLOR[pkgWorstSev] : null;
+              const nameDiv = document.createElement('div');
+              nameDiv.innerHTML = `
+                <div style="display:flex;align-items:center;gap:6px;min-width:0">
+                  <div style="font-size:13px;color:${pkgVulnColor ?? (pkg.isConflict ? '#c026d3' : '#cbd5e1')};font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pkg.name}</div>
+                  ${pkgVulns.length ? `<span style="flex-shrink:0;font-size:10px;color:${pkgVulnColor};background:#1f1010;border:1px solid ${pkgVulnColor}44;border-radius:3px;padding:1px 5px;white-space:nowrap">⚠ ${pkgWorstSev ?? 'VULN'}</span>` : ''}
+                </div>
+                <div style="font-size:11px;color:#475569;margin-top:1px">v${pkg.version}${pkg.isConflict && pkg.conflictVersions?.length ? ` · <span style="color:#a21caf">${pkg.conflictVersions.length} versions</span>` : ''}</div>
+              `;
+
+              const barPct = Math.max(2, (pkg.treeSize / maxSize) * 100);
+              const barTrack = document.createElement('div');
+              barTrack.style.cssText = 'height:4px;background:#1e293b;border-radius:2px;overflow:hidden';
+              barTrack.innerHTML = `<div style="width:${barPct.toFixed(1)}%;height:4px;background:${color};border-radius:2px;min-width:2px"></div>`;
+
+              const countDiv = document.createElement('div');
+              countDiv.style.cssText = 'font-size:12px;color:#475569;text-align:right;white-space:nowrap';
+              countDiv.textContent = pkg.treeSize === 0 ? 'no deps' : `${pkg.treeSize} dep${pkg.treeSize !== 1 ? 's' : ''}`;
+
+              row.appendChild(nameDiv);
+              row.appendChild(barTrack);
+              row.appendChild(countDiv);
+
+              row.addEventListener('mouseenter', () => {
+                row.style.background = '#1e293b';
+                row.style.borderColor = '#334155';
+              });
+              row.addEventListener('mouseleave', () => {
+                row.style.background = 'transparent';
+                row.style.borderColor = 'transparent';
+              });
+              row.addEventListener('click', () => this._focusPackage(pkg.name));
+
+              section.appendChild(row);
+            }
+
+            wrap.appendChild(section);
+          }
+
+          container.appendChild(wrap);
+        }
+
+        _reset() {
+          this._phase = 'idle';
+          this._data = null;
+          this._error = '';
+          this._maxDepth = null;
+          this._selectedDepth = null;
+          this._filter = 'all';
+          this._conflictCount = 0;
+          this._searchQuery = '';
+          this._visibleCount = 0;
+          this._suggestions = [];
+          this._inputFocused = false;
+          this._focusedPackage = null;
+          this._topPackages = null;
+          this._showInfo = false;
+          this._vulnMap = null;
+          this._vulnStatus = 'idle';
+          this._osvRequestId++;
+          document.title = 'Package Lock Visualizer';
+          hideTip();
+        }
+
+        render() {
+          const rootNode = this._data?.nodes.find((n) => n.isRoot);
+          const totalCount = this._data?.nodes.filter((n) => !n.isRoot).length ?? 0;
+          return html`
+            <div class="min-h-screen bg-slate-900 text-slate-100 flex flex-col">
+              <!-- Branding header -->
+              <header class="px-6 pt-5 pb-4">
+                <div class="max-w-screen-xl mx-auto flex items-start justify-between">
+                  <div>
+                    ${rootNode?.version
+                      ? html`
+                          <div
+                            class="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1"
+                          >
+                            v${rootNode.version}
+                          </div>
+                        `
+                      : ''}
+                    <h1 class="text-2xl font-semibold tracking-tight">
+                      ${this._data ? this._data.name : 'Package Lock Visualizer'}
+                    </h1>
+                    ${!this._data
+                      ? html`
+                          <p class="text-slate-400 text-sm mt-1">
+                            Upload a
+                            <code class="text-blue-400 bg-blue-400/10 px-1.5 py-0.5 rounded text-xs"
+                              >package-lock.json</code
                             >
-                              <span class="${isConflict ? 'text-fuchsia-400' : 'text-slate-200'} truncate flex-1">${name}</span>
-                              ${isConflict ? html`<span class="text-xs text-fuchsia-600 shrink-0">conflict</span>` : ''}
-                            </button>
-                          `)}
-                        </div>
-                      ` : ''}
-                    </div>
+                            to explore dependencies as a Sankey diagram
+                          </p>
+                        `
+                      : ''}
+                  </div>
+                  <span class="text-slate-600 text-sm font-medium select-none mt-1.5"
+                    >Package Lock Visualizer</span
+                  >
+                </div>
+              </header>
 
-                    ${stats ? html`
-                      <div class="relative group flex items-center gap-1.5 text-sm text-slate-400 ml-auto cursor-default select-none">
-                        <span>
-                          <span class="text-slate-200 font-semibold">${stats.total}</span>
-                          ${stats.total !== this._data.installedCount ? html`
-                            <span class="text-slate-500"> of ${this._data.installedCount}</span>
-                          ` : ''}
-                          <span class="text-slate-500"> packages</span>
-                        </span>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
-                             fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                             class="text-slate-600 group-hover:text-slate-400 transition-colors">
-                          <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-                        </svg>
-                        <div class="absolute top-full right-0 mt-2 w-56 bg-slate-800 border border-slate-700
-                                    rounded-lg shadow-xl p-3 text-xs text-slate-400 leading-relaxed
-                                    invisible opacity-0 group-hover:visible group-hover:opacity-100
-                                    transition-opacity duration-150 pointer-events-none z-50">
-                          <div class="flex justify-between py-0.5">
-                            <span class="text-slate-500">Visible</span>
-                            <span class="text-slate-200">${stats.total} packages</span>
+              <!-- Sticky control bar (only when data loaded) -->
+              ${this._phase === 'loaded'
+                ? html`
+                    <div
+                      class="sticky top-0 z-10 bg-slate-900 border-b border-slate-800 px-6 py-2.5"
+                    >
+                      <div
+                        class="max-w-screen-xl mx-auto flex items-center justify-between gap-3"
+                      >
+                        <div class="flex items-center gap-2 flex-wrap">
+                          ${this._maxDepth
+                            ? html`
+                                <div
+                                  class="flex items-center gap-2 text-sm text-slate-400
+                                  border border-slate-700 rounded px-3 py-1"
+                                >
+                                  <span class="select-none">Depth</span>
+                                  <select
+                                    @change=${this._onDepthChange}
+                                    class="bg-transparent text-slate-200 cursor-pointer outline-none"
+                                  >
+                                    ${Array.from({ length: this._maxDepth }, (_, i) => i + 1).map(
+                                      (d) => html`
+                                        <option
+                                          value=${d}
+                                          ?selected=${d === this._selectedDepth}
+                                          style="background:#0f172a"
+                                        >
+                                          ${d}
+                                        </option>
+                                      `
+                                    )}
+                                  </select>
+                                </div>
+                                <div class="w-px h-5 bg-slate-800 select-none"></div>
+                              `
+                            : ''}
+                          <div class="flex items-center gap-1.5">
+                            ${[
+                              { value: 'prod',     label: 'Prod',     activeStyle: 'border-color:#cbd5e1;background:#cbd5e1;color:#0f172a;box-shadow:0 1px 0 rgba(255,255,255,0.05) inset' },
+                              { value: 'dev',      label: 'Dev',      activeStyle: 'border-color:#cbd5e1;background:#cbd5e1;color:#0f172a;box-shadow:0 1px 0 rgba(255,255,255,0.05) inset' },
+                              { value: 'conflict', label: `Conflicts${this._conflictCount ? ' ' + this._conflictCount : ''}`, activeStyle: 'border-color:#a855f7;background:#a855f7;color:#1a0a24' },
+                              ...(this._vulnStatus === 'done' ? [{ value: 'vuln', label: `Audit${this._vulnMap?.size ? ' ' + this._vulnMap.size : ''}`, activeStyle: 'border-color:#f97316;background:#f97316;color:#1a0a00' }] : []),
+                            ].map(({ value, label, activeStyle }) => html`
+                              <button
+                                @click=${() => this._setFilter(value)}
+                                class="text-sm px-3 py-1 rounded-md border cursor-pointer select-none transition-colors font-medium"
+                                style="${this._filter === value ? activeStyle : 'border-color:#334155;color:#94a3b8;background:transparent'}"
+                              >${label}</button>
+                            `)}
                           </div>
-                          <div class="flex justify-between py-0.5">
-                            <span class="text-slate-500">Total unique</span>
-                            <span class="text-slate-200">${this._data.installedCount}</span>
-                          </div>
-                          <div class="flex justify-between py-0.5">
-                            <span class="text-slate-500">Install paths</span>
-                            <span class="text-slate-200">${this._data.pathCount}</span>
-                          </div>
-                          <div class="flex justify-between py-0.5">
-                            <span class="text-slate-500">Max depth</span>
-                            <span class="text-slate-200">${stats.maxD}</span>
-                          </div>
-                          <div class="flex justify-between py-0.5">
-                            <span class="text-slate-500">Lockfile version</span>
-                            <span class="text-slate-200">v${this._data.lockfileVersion}</span>
-                          </div>
-                          ${this._data.duplicates?.length ? html`
-                            <div class="flex justify-between py-0.5">
-                              <span class="text-slate-500">Version conflicts</span>
-                              <span class="text-fuchsia-400">${this._data.duplicates.length}</span>
+                          <div class="w-px h-5 bg-slate-800 select-none"></div>
+                          <div style="position:relative">
+                            <div
+                              class="flex items-center gap-2 text-sm text-slate-400
+                                  border border-slate-700 rounded px-3 py-1"
+                            >
+                              <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                class="shrink-0 text-slate-500"
+                              >
+                                <circle cx="11" cy="11" r="8" />
+                                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                              </svg>
+                              <input
+                                type="text"
+                                placeholder="Filter package..."
+                                .value=${this._searchQuery}
+                                @input=${this._onSearchInput}
+                                @focus=${this._onSearchFocus}
+                                @blur=${this._onSearchBlur}
+                                class="bg-transparent text-slate-200 outline-none placeholder-slate-600 w-40"
+                              />
+                              ${this._searchQuery
+                                ? html`
+                                    <button
+                                      @click=${this._clearSearch}
+                                      class="text-slate-500 hover:text-slate-300 transition-colors cursor-pointer leading-none"
+                                      style="font-size:16px;line-height:1"
+                                    >
+                                      ×
+                                    </button>
+                                  `
+                                : ''}
                             </div>
-                          ` : ''}
+                            ${this._inputFocused && this._suggestions.length
+                              ? html`
+                                  <div
+                                    style="position:absolute;top:calc(100% + 4px);left:0;z-index:50;min-width:260px"
+                                    class="bg-slate-800 border border-slate-700 rounded-lg py-1 shadow-xl"
+                                  >
+                                    ${this._suggestions.map(
+                                      (s) => html`
+                                        <div
+                                          @mousedown=${() => this._focusPackage(s.name)}
+                                          class="flex items-center justify-between px-4 py-2.5 cursor-pointer
+                                           hover:bg-slate-700/60 text-sm transition-colors"
+                                        >
+                                          <span
+                                            class="${s.isConflict ? 'text-fuchsia-400' : 'text-slate-200'}"
+                                          >
+                                            ${s.name}
+                                          </span>
+                                          ${s.isConflict
+                                            ? html`<span
+                                                class="text-xs text-fuchsia-500 select-none"
+                                                >conflict</span
+                                              >`
+                                            : ''}
+                                        </div>
+                                      `
+                                    )}
+                                  </div>
+                                `
+                              : ''}
+                          </div>
                         </div>
-                      </div>
-                    ` : ''}
-
-                    <button
-                      @click=${this._reset}
-                      class="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200
+                        <div class="flex items-center gap-3 shrink-0">
+                          ${this._renderVulnStatus()}
+                          <div style="position:relative">
+                            <span class="text-sm text-slate-500 select-none">
+                              <strong class="text-slate-300 font-medium">${this._visibleCount}</strong>
+                              ${this._visibleCount !== totalCount ? html`of ${totalCount} ` : ''}packages
+                            </span>
+                            <button
+                              @click=${() => (this._showInfo = !this._showInfo)}
+                              class="ml-1.5 text-slate-500 hover:text-slate-300 transition-colors cursor-pointer align-middle"
+                              style="font-size:14px;line-height:1"
+                              title="Package stats"
+                            >ⓘ</button>
+                            ${this._showInfo
+                              ? html`
+                                  <div
+                                    style="position:fixed;inset:0;z-index:99"
+                                    @click=${() => (this._showInfo = false)}
+                                  ></div>
+                                  <div
+                                    style="position:absolute;right:0;top:calc(100% + 8px);z-index:100;min-width:260px"
+                                    class="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl p-4"
+                                    @click=${(e) => e.stopPropagation()}
+                                  >
+                                    ${[
+                                      ['Visible', html`<span class="text-slate-200 font-medium">${this._visibleCount} packages</span>`],
+                                      ['Total unique', this._data.uniqueCount],
+                                      ['Install paths', this._data.installPaths],
+                                      ['Max depth', this._maxDepth],
+                                      ['Lockfile version', `v${this._data.lockfileVersion}`],
+                                      ['Version conflicts', html`<span style="${this._conflictCount ? 'color:#c026d3' : ''}">${this._conflictCount}</span>`],
+                                      ['Audit issues', this._vulnStatus === 'loading'
+                                        ? html`<span style="color:#64748b">checking…</span>`
+                                        : this._vulnStatus === 'done'
+                                          ? html`<span style="${this._vulnMap?.size ? 'color:#ef4444' : 'color:#10b981'}">${this._vulnMap?.size ?? 0}</span>`
+                                          : html`<span style="color:#64748b">unavailable</span>`],
+                                    ].map(([label, value]) => html`
+                                      <div class="flex items-center justify-between py-1.5 text-sm border-b border-slate-700/50 last:border-0">
+                                        <span class="text-slate-400">${label}</span>
+                                        <span class="text-slate-200">${value}</span>
+                                      </div>
+                                    `)}
+                                  </div>
+                                `
+                              : ''}
+                          </div>
+                          <button
+                            @click=${this._reset}
+                            class="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200
                              border border-slate-700 hover:border-slate-500 rounded px-3 py-1
                              transition-colors cursor-pointer"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"
-                           fill="none" stroke="currentColor" stroke-width="2.5"
-                           stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
-                        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
-                      </svg>
-                      Upload
-                    </button>
-                  </div>
-
-                  <!-- Top packages -->
-                  ${stats?.topPkgs.length ? html`
-                    <div class="mb-5">
-                      <p class="text-xs text-slate-500 uppercase tracking-widest mb-2">Largest dependency trees</p>
-                      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-                        ${stats.topPkgs.map(([pkgName, treeSize]) => html`
-                          <button
-                            @click=${() => this._focusPackage(pkgName)}
-                            class="text-left bg-slate-800/80 border rounded-lg px-3 py-2.5 transition-all cursor-pointer
-                                   ${this._focusPkg === pkgName
-                  ? 'border-blue-500 bg-blue-900/30'
-                  : 'border-slate-700/60 hover:border-slate-500'}"
                           >
-                            <div class="text-slate-200 text-sm font-medium truncate" title=${pkgName}>
-                              ${pkgName}
-                            </div>
-                            <div class="text-slate-500 text-xs mt-0.5">${treeSize} pkg tree</div>
+                            <svg
+                              width="13"
+                              height="13"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <polyline points="16 16 12 12 8 16" />
+                              <line x1="12" y1="12" x2="12" y2="21" />
+                              <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+                            </svg>
+                            Upload
                           </button>
-                        `)}
+                        </div>
                       </div>
                     </div>
-                  ` : ''}
+                  `
+                : ''}
 
-                  <!-- Sankey chart -->
-                  <div class="bg-slate-800/40 border border-slate-700/60 rounded-xl p-4 overflow-x-auto">
-                    <div id="sankey-container" class="w-full min-h-[640px]"></div>
-                  </div>
-
-                  <!-- Depth legend -->
-                  <div class="flex flex-wrap items-center gap-x-5 gap-y-2 mt-4 text-xs text-slate-500">
-                    ${DEPTH_LABELS.slice(1, this._maxDepth + 1).map((label, i) => html`
-                      <div class="flex items-center gap-1.5">
-                        <div class="w-3 h-3 rounded-sm" style="background:${DEPTH_COLORS[i + 1]}"></div>
-                        <span>${label}</span>
+              <!-- Content -->
+              <div class="flex-1 px-6 pb-6 pt-6">
+                <div class="max-w-screen-xl mx-auto">
+                  ${this._phase !== 'loaded'
+                  ? html`
+                      <div
+                        class="drop-zone relative overflow-hidden border-2 border-dashed border-slate-700 rounded-xl p-20 text-center cursor-pointer
+                         hover:border-blue-500 hover:bg-blue-950/25 transition-all select-none"
+                        @dragover=${this._onDragOver}
+                        @dragleave=${this._onDragLeave}
+                        @drop=${this._onDrop}
+                        @click=${() => this.querySelector('#file-input').click()}
+                      >
+                        <svg class="absolute inset-0 w-full h-full pointer-events-none" preserveAspectRatio="none" viewBox="0 0 800 400" aria-hidden="true">
+                          <path d="M-20,90 C200,90 200,170 400,170 S600,80 820,80" fill="none" stroke="#6366f1" stroke-width="44" stroke-opacity="0.06" />
+                          <path d="M-20,200 C200,200 200,250 400,250 S600,200 820,200" fill="none" stroke="#06b6d4" stroke-width="34" stroke-opacity="0.06" />
+                          <path d="M-20,320 C200,320 200,270 400,270 S600,320 820,320" fill="none" stroke="#10b981" stroke-width="26" stroke-opacity="0.06" />
+                        </svg>
+                        <div class="relative">
+                          <svg class="mx-auto mb-6" width="64" height="48" viewBox="0 0 64 48" fill="none" aria-hidden="true">
+                            <path d="M8 12 C 20 12, 20 11, 30 11" stroke="#6366f1" stroke-width="2.5" stroke-opacity="0.55" fill="none"/>
+                            <path d="M8 36 C 20 36, 20 37, 30 37" stroke="#3b82f6" stroke-width="2.5" stroke-opacity="0.55" fill="none"/>
+                            <path d="M36 11 C 46 11, 46 24, 56 24" stroke="#06b6d4" stroke-width="2.5" stroke-opacity="0.55" fill="none"/>
+                            <path d="M36 37 C 46 37, 46 24, 56 24" stroke="#10b981" stroke-width="2.5" stroke-opacity="0.55" fill="none"/>
+                            <rect x="2" y="6" width="6" height="14" fill="#6366f1" rx="1.5"/>
+                            <rect x="2" y="28" width="6" height="14" fill="#3b82f6" rx="1.5"/>
+                            <rect x="30" y="0" width="6" height="22" fill="#06b6d4" rx="1.5"/>
+                            <rect x="30" y="26" width="6" height="22" fill="#10b981" rx="1.5"/>
+                            <rect x="56" y="14" width="6" height="20" fill="#f59e0b" rx="1.5"/>
+                          </svg>
+                          <p class="text-slate-200 font-medium text-lg">
+                            Drop your package-lock.json here
+                          </p>
+                          <p class="text-slate-500 text-sm mt-2">or click to browse</p>
+                        </div>
+                        ${this._error
+                          ? html`
+                              <p
+                                class="text-red-400 text-sm mt-6 max-w-md mx-auto bg-red-950/40 border border-red-900/50 rounded-lg p-3"
+                              >
+                                ${this._error}
+                              </p>
+                            `
+                          : ''}
+                        <input
+                          id="file-input"
+                          type="file"
+                          accept=".json"
+                          class="hidden"
+                          @change=${this._onFileInput}
+                        />
                       </div>
-                    `)}
-                    ${this._data.duplicates?.length ? html`
-                      <div class="flex items-center gap-1.5 ml-2 pl-4 border-l border-slate-700">
-                        <div class="w-3 h-3 rounded-sm" style="background:#c026d3"></div>
-                        <span style="color:#c026d3cc">Version conflict</span>
+
+                      ${this._savedFiles.length > 0 ? html`
+                        <div class="mt-8">
+                          <div class="text-xs font-medium text-slate-500 uppercase tracking-widest mb-3 select-none">
+                            Recent Files
+                          </div>
+                          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                            ${(() => {
+                              const maxPkg = Math.max(1, ...this._savedFiles.map((f) => f.pkgCount));
+                              return this._savedFiles.map((f) => {
+                                const ratio = f.pkgCount / maxPkg;
+                                const segs = 7;
+                                const filled = Math.max(1, Math.round(ratio * segs));
+                                return html`
+                                  <div
+                                    @click=${() => this._loadJson(JSON.parse(f.raw))}
+                                    class="group relative cursor-pointer rounded-lg overflow-hidden border border-slate-700 bg-slate-800/60 hover:border-slate-500 hover:bg-slate-700/40 transition-colors select-none text-left"
+                                  >
+                                    <div class="h-[3px] flex">
+                                      ${Array.from({ length: segs }, (_, i) => html`
+                                        <div class="flex-1" style="background:${i < filled ? DEPTH_COLORS[Math.min(i, DEPTH_COLORS.length - 1)] : '#1e293b'};${i > 0 ? 'margin-left:1px;' : ''}opacity:${i < filled ? 0.85 : 1}"></div>
+                                      `)}
+                                    </div>
+                                    <div class="px-4 py-3">
+                                      <button
+                                        @click=${(e) => this._deleteFile(f.id, e)}
+                                        class="absolute top-3 right-2 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all w-6 h-6 flex items-center justify-center rounded"
+                                        title="Remove"
+                                      >✕</button>
+                                      <div class="text-slate-200 font-medium truncate pr-6">${f.name}</div>
+                                      <div class="flex items-baseline gap-1.5 mt-1">
+                                        <span class="text-slate-300 text-sm font-medium tabular-nums">${f.pkgCount.toLocaleString()}</span>
+                                        <span class="text-slate-500 text-xs">packages</span>
+                                      </div>
+                                      <div class="text-slate-600 text-xs mt-0.5">${new Date(f.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                                    </div>
+                                  </div>
+                                `;
+                              });
+                            })()}
+                          </div>
+                        </div>
+                      ` : ''}
+                    `
+                  : ''}
+                ${this._phase === 'loaded'
+                  ? html`
+                      ${this._topPackages?.length
+                        ? html`
+                            <div class="mb-5">
+                              <div
+                                class="text-xs font-medium text-slate-500 uppercase tracking-widest mb-3 select-none"
+                              >
+                                Largest Dependency Trees
+                              </div>
+                              <div class="flex gap-3">
+                                ${this._topPackages.map(
+                                  (p) => html`
+                                    <div
+                                      @click=${() => this._focusPackage(p.name)}
+                                      class="flex-1 cursor-pointer rounded-lg px-4 py-3 border transition-colors select-none
+                                        ${this._focusedPackage === p.name
+                                          ? 'border-slate-300 bg-slate-700/60'
+                                          : 'border-slate-700 bg-slate-800/60 hover:border-slate-500 hover:bg-slate-700/40'}"
+                                    >
+                                      <div class="text-sm font-medium text-slate-200">${p.name}</div>
+                                      <div class="text-xs text-slate-500 mt-0.5">
+                                        ${p.treeSize} pkg tree
+                                      </div>
+                                    </div>
+                                  `
+                                )}
+                              </div>
+                            </div>
+                          `
+                        : ''}
+                      <div
+                        class="bg-slate-800/40 border border-slate-700/60 rounded-xl overflow-hidden"
+                      >
+                        <div class="overflow-x-auto p-4">
+                          <div id="sankey-container" class="w-full"></div>
+                        </div>
+                        <div class="border-t border-slate-700/60 bg-slate-900/40 px-4 py-3 flex items-center justify-center gap-5 flex-wrap">
+                        ${DEPTH_COLORS.map((color, i) => {
+                          const label =
+                            i === 0
+                              ? 'Direct'
+                              : i < DEPTH_COLORS.length - 1
+                                ? `Depth ${i + 1}`
+                                : `Depth ${i + 1}+`;
+                          const activeIdx = Math.min(
+                            (this._selectedDepth ?? 1) - 1,
+                            DEPTH_COLORS.length - 1
+                          );
+                          const isActive = i === activeIdx;
+                          return html`
+                            <div
+                              class="flex items-center gap-1.5 text-sm cursor-pointer select-none transition-colors
+                               ${isActive
+                                ? 'text-slate-100'
+                                : 'text-slate-500 hover:text-slate-300'}"
+                              @click=${() => this._setDepthFromLegend(i)}
+                            >
+                              <span
+                                style="width:10px;height:10px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0;
+                          ${isActive ? `box-shadow:0 0 0 2px ${color}55` : ''}"
+                              ></span>
+                              ${label}
+                            </div>
+                          `;
+                        })}
+                        <span class="text-slate-700 select-none mx-1">|</span>
+                        <div class="flex items-center gap-1.5 text-sm" style="color:#c026d3">
+                          <span
+                            style="width:10px;height:10px;border-radius:50%;background:#c026d3;display:inline-block;flex-shrink:0"
+                          ></span>
+                          Version conflict
+                        </div>
+                        ${this._vulnStatus === 'done' && this._vulnMap?.size ? html`
+                          <div class="flex items-center gap-1.5 text-sm text-slate-400">
+                            <span style="display:flex;gap:2px;flex-shrink:0">
+                              ${['#fbbf24','#f59e0b','#f97316','#ef4444'].map(c => html`<span style="width:6px;height:10px;border-radius:2px;background:${c};display:inline-block"></span>`)}
+                            </span>
+                            Audit (low→critical)
+                          </div>
+                        ` : ''}
+                        <div class="flex items-center gap-1.5 text-sm text-slate-400">
+                          <svg width="16" height="10" style="flex-shrink:0">
+                            <line
+                              x1="0"
+                              y1="5"
+                              x2="16"
+                              y2="5"
+                              stroke="#94a3b8"
+                              stroke-width="2"
+                              stroke-dasharray="4 2"
+                            />
+                          </svg>
+                          Peer dependency
+                        </div>
+                        </div>
                       </div>
-                    ` : ''}
-                  </div>
-
-                ` : ''}
-
+                    `
+                  : ''}
+                </div>
               </div>
             </div>
           `;
+        }
       }
-    }
 
-    customElements.define('pkg-lock-visualizer', PkgLockVisualizer);
-  </script>
-</body>
-
+      customElements.define('pkg-lock-visualizer', PkgLockVisualizer);
+    </script>
+  </body>
 </html>
