@@ -44,7 +44,7 @@ For every dependency declared by a package, the tool finds the installed version
 
 Depth in the [Sankey diagram](https://en.wikipedia.org/wiki/Sankey_diagram) is the **longest path from the root** to a node (computed by walking the graph and taking `max(parent.depth) + 1`). d3-sankey then uses this for left-aligned column placement.
 
-`npm ls --depth=N` instead caps recursion in the print tree. Because shared dependencies in the Sankey collapse to one node, that node shows up at its furthest depth from root, not its shallowest. A package that's a direct dep *and* a transitive dep three levels down will sit in the deeper column.
+`npm ls --depth=N` instead caps recursion in the print tree. Because shared dependencies in the Sankey collapse to one node, that node shows up at its furthest depth from root, not its shallowest. A package that's a direct dep _and_ a transitive dep three levels down will sit in the deeper column.
 
 The depth filter in the UI uses the same longest-path metric, so it's internally consistent — just don't expect the count to match `npm ls`'s.
 
