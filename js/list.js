@@ -19,7 +19,9 @@ export function renderList(container, nodes, treeSizeMap, rootDeps, vulnMap, onP
 
   const groups = { prod: [], dev: [], peer: [], optional: [] };
   for (const node of nodes) {
-    const type = rootDeps.get(node.name) ?? (node.dev ? "dev" : "prod");
+    const type = node.isOptionalGroup
+      ? "optional"
+      : (rootDeps.get(node.name) ?? (node.dev ? "dev" : "prod"));
     groups[type].push({ ...node, treeSize: treeSizeMap.get(node.id) ?? 0 });
   }
   for (const list of Object.values(groups)) {
@@ -63,13 +65,23 @@ export function renderList(container, nodes, treeSizeMap, rootDeps, vulnMap, onP
       const pkgVulnColor = pkgWorstSev ? SEVERITY_COLOR[pkgWorstSev] : null;
 
       const nameDiv = document.createElement("div");
-      nameDiv.innerHTML = `
+      if (pkg.isOptionalGroup) {
+        nameDiv.innerHTML = `
+        <div style="display:flex;align-items:center;gap:6px;min-width:0">
+          <div style="font-size:13px;color:#cbd5e1;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pkg.parentName}</div>
+          <span style="flex-shrink:0;font-size:10px;color:#f59e0b;background:#1f1808;border:1px solid #f59e0b44;border-radius:3px;padding:1px 5px;white-space:nowrap">${pkg.alternatives.length} optional</span>
+        </div>
+        <div style="font-size:11px;color:#475569;margin-top:1px">1 of ${pkg.alternatives.length} installs per OS/CPU</div>
+      `;
+      } else {
+        nameDiv.innerHTML = `
         <div style="display:flex;align-items:center;gap:6px;min-width:0">
           <div style="font-size:13px;color:${pkgVulnColor ?? (pkg.isConflict ? "#c026d3" : "#cbd5e1")};font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pkg.name}</div>
           ${pkgVulns.length ? `<span style="flex-shrink:0;font-size:10px;color:${pkgVulnColor};background:#1f1010;border:1px solid ${pkgVulnColor}44;border-radius:3px;padding:1px 5px;white-space:nowrap">⚠ ${pkgWorstSev ?? "VULN"}</span>` : ""}
         </div>
         <div style="font-size:11px;color:#475569;margin-top:1px">v${pkg.version}${pkg.isConflict && pkg.conflictVersions?.length ? ` · <span style="color:#a21caf">${pkg.conflictVersions.length} versions</span>` : ""}</div>
       `;
+      }
 
       const barPct = Math.max(2, (pkg.treeSize / maxSize) * 100);
       const barTrack = document.createElement("div");
@@ -93,7 +105,7 @@ export function renderList(container, nodes, treeSizeMap, rootDeps, vulnMap, onP
         row.style.background = "transparent";
         row.style.borderColor = "transparent";
       });
-      row.addEventListener("click", () => onPackageClick(pkg.name));
+      row.addEventListener("click", () => onPackageClick(pkg));
 
       section.appendChild(row);
     }

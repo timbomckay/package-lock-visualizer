@@ -29,6 +29,7 @@ export class PkgLockVisualizer extends LitElement {
     _focusedPackage: { state: true },
     _topPackages: { state: true },
     _showInfo: { state: true },
+    _optionalGroup: { state: true },
     _savedFiles: { state: true },
     _vulnMap: { state: true },
     _vulnStatus: { state: true },
@@ -54,6 +55,7 @@ export class PkgLockVisualizer extends LitElement {
     this._focusedPackage = null;
     this._topPackages = null;
     this._showInfo = false;
+    this._optionalGroup = null;
     this._savedFiles = [];
     this._vulnMap = null;
     this._vulnStatus = "idle";
@@ -108,7 +110,7 @@ export class PkgLockVisualizer extends LitElement {
       this._redraw();
       this._osvController?.abort();
       this._osvController = new AbortController();
-      this._runOSV(data.nodes, this._osvController.signal);
+      this._runOSV(data.auditNodes ?? data.nodes, this._osvController.signal);
     } catch (err) {
       console.error(err);
       this._error = err.message;
@@ -226,10 +228,22 @@ export class PkgLockVisualizer extends LitElement {
     const curKey = (this._topPackages ?? []).map((p) => `${p.name}:${p.treeSize}`).join(",");
     if (topKey !== curKey) this._topPackages = newTop;
     const useListView = this._selectedDepth === 1 && !this._focusedPackage;
+    const onNodeClick = (node) => {
+      if (node?.isOptionalGroup) {
+        this._optionalGroup = node;
+        return;
+      }
+      this._focusPackage(node?.name ?? node);
+    };
     if (useListView) {
-      const directNodes = nodes.filter((n) => this._data.rootDeps.has(n.name));
-      renderList(container, directNodes, treeSizeMap, this._data.rootDeps, this._vulnMap, (name) =>
-        this._focusPackage(name),
+      const directNodes = nodes.filter((n) => this._data.rootDeps.has(n.name) || n.isOptionalGroup);
+      renderList(
+        container,
+        directNodes,
+        treeSizeMap,
+        this._data.rootDeps,
+        this._vulnMap,
+        onNodeClick,
       );
       if (this._visibleCount !== directNodes.length) this._visibleCount = directNodes.length;
     } else {
@@ -240,7 +254,7 @@ export class PkgLockVisualizer extends LitElement {
         links,
         this._selectedDepth,
         treeSizeMap,
-        (name) => this._focusPackage(name),
+        onNodeClick,
         this._vulnMap,
       );
       if (this._visibleCount !== nodes.length) this._visibleCount = nodes.length;
@@ -614,6 +628,16 @@ export class PkgLockVisualizer extends LitElement {
                                 ],
                                 ["Total unique", this._data.uniqueCount],
                                 ["Install paths", this._data.installPaths],
+                                ...(this._data.optionalCount
+                                  ? [
+                                      [
+                                        "Optional",
+                                        html`<span style="color:#f59e0b"
+                                          >${this._data.optionalCount}</span
+                                        >`,
+                                      ],
+                                    ]
+                                  : []),
                                 ["Max depth", this._maxDepth],
                                 ["Lockfile version", `v${this._data.lockfileVersion}`],
                                 [
@@ -964,6 +988,76 @@ export class PkgLockVisualizer extends LitElement {
                   </div>
                 `
               : ""}
+          </div>
+        </div>
+        ${this._optionalGroup ? this._renderOptionalDialog() : ""}
+      </div>
+    `;
+  }
+
+  _renderOptionalDialog() {
+    const g = this._optionalGroup;
+    const close = () => (this._optionalGroup = null);
+    return html`
+      <div
+        style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px"
+        @click=${close}
+      >
+        <div
+          class="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl"
+          style="max-width:520px;width:100%;max-height:80vh;display:flex;flex-direction:column"
+          @click=${(e) => e.stopPropagation()}
+        >
+          <div class="px-5 py-4 border-b border-slate-700">
+            <div class="flex items-center gap-2">
+              <span
+                style="color:#f59e0b;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em"
+                >Optional</span
+              >
+              <span class="text-slate-300 font-medium">${g.parentName}</span>
+            </div>
+            <div class="text-xs text-slate-500 mt-1">
+              ${g.alternatives.length} packages listed · typically only 1 installs (per OS/CPU) ·
+              all are scanned by audit
+            </div>
+          </div>
+          <div style="overflow-y:auto;padding:8px 12px">
+            ${g.alternatives.map((alt) => {
+              const vulns = this._vulnMap?.get(alt.id);
+              return html`
+                <div
+                  class="flex items-center justify-between py-2 px-2 rounded hover:bg-slate-700/40 cursor-pointer"
+                  @click=${() => {
+                    this._optionalGroup = null;
+                    this._focusPackage(alt.name);
+                  }}
+                >
+                  <div style="min-width:0">
+                    <div
+                      class="text-sm text-slate-200"
+                      style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                    >
+                      ${alt.name}
+                    </div>
+                    <div class="text-xs text-slate-500">v${alt.version}</div>
+                  </div>
+                  ${vulns?.length
+                    ? html`<span
+                        style="font-size:10px;color:#ef4444;background:#1f1010;border:1px solid #ef444444;border-radius:3px;padding:1px 5px;white-space:nowrap"
+                        >⚠ ${vulns.length}</span
+                      >`
+                    : ""}
+                </div>
+              `;
+            })}
+          </div>
+          <div class="px-5 py-3 border-t border-slate-700 flex justify-end">
+            <button
+              class="text-sm text-slate-400 hover:text-slate-200 cursor-pointer"
+              @click=${close}
+            >
+              Close
+            </button>
           </div>
         </div>
       </div>

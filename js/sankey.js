@@ -88,16 +88,24 @@ export function renderSankey(
     .selectAll("path")
     .data(graph.links)
     .join("path")
-    .attr("class", (d) => `sankey-link${d.isPeer ? " peer" : ""}`)
+    .attr("class", (d) => `sankey-link${d.isPeer ? " peer" : ""}${d.isOptional ? " optional" : ""}`)
     .attr("d", sankeyLinkHorizontal())
-    .attr("stroke", (d) => (d.target.isConflict ? "#c026d3" : depthColor(d.source)))
+    .attr("stroke", (d) =>
+      d.isOptional ? "#f59e0b" : d.target.isConflict ? "#c026d3" : depthColor(d.source),
+    )
+    .attr("stroke-dasharray", (d) => (d.isOptional ? "4 3" : null))
     .attr("stroke-width", (d) => Math.max(1, d.width))
-    .on("mousemove", (ev, d) =>
+    .on("mousemove", (ev, d) => {
+      const tag = d.isPeer
+        ? ' <span style="color:#7c3aed;font-size:10px">(peer)</span>'
+        : d.isOptional
+          ? ' <span style="color:#f59e0b;font-size:10px">(optional)</span>'
+          : "";
       showTip(
         ev,
-        `<span style="color:#94a3b8">${d.source.name}</span> <span style="color:#475569">→</span> <span style="color:#94a3b8">${d.target.name}</span>${d.isPeer ? ' <span style="color:#7c3aed;font-size:10px">(peer)</span>' : ""}`,
-      ),
-    )
+        `<span style="color:#94a3b8">${d.source.name}</span> <span style="color:#475569">→</span> <span style="color:#94a3b8">${d.target.name}</span>${tag}`,
+      );
+    })
     .on("mouseleave", hideTip);
 
   const nodeG = svg
@@ -113,6 +121,7 @@ export function renderSankey(
     .attr("width", (d) => d.x1 - d.x0)
     .attr("rx", 2)
     .attr("fill", (d) => {
+      if (d.isOptionalGroup) return "#f59e0b";
       const vulns = vulnMap?.get(d.id);
       if (!vulns) return depthColor(d);
       const sev = worstSeverity(vulns) ?? "CRITICAL";
@@ -128,7 +137,11 @@ export function renderSankey(
     .attr("fill", "#cbd5e1")
     .attr("font-size", 11)
     .text((d) => {
-      const l = d.isRoot ? `${d.name} (root)` : d.name;
+      const l = d.isRoot
+        ? `${d.name} (root)`
+        : d.isOptionalGroup
+          ? `${d.alternatives.length} optional`
+          : d.name;
       return l.length > 32 ? l.slice(0, 30) + "…" : l;
     });
 
@@ -137,11 +150,13 @@ export function renderSankey(
     .on("mousemove", (ev, d) => {
       const into = d.targetLinks?.length ?? 0;
       const treeSize = treeSizeMap.get(d.id) ?? 0;
-      const typeLabel = d.isPeer
-        ? '<span style="color:#7c3aed">peer</span>'
-        : d.dev
-          ? '<span style="color:#64748b">dev</span>'
-          : '<span style="color:#10b981">prod</span>';
+      const typeLabel = d.isOptionalGroup
+        ? '<span style="color:#f59e0b">optional</span>'
+        : d.isPeer
+          ? '<span style="color:#7c3aed">peer</span>'
+          : d.dev
+            ? '<span style="color:#64748b">dev</span>'
+            : '<span style="color:#10b981">prod</span>';
       const versionLine =
         d.isConflict && d.conflictVersions?.length
           ? `<div style="color:#c026d3;font-size:11px">${d.conflictVersions.length} versions: ${d.conflictVersions.join(", ")}</div>`
@@ -162,6 +177,16 @@ export function renderSankey(
               ${nodeVulns.length > 3 ? `<div style="font-size:10px;color:#64748b">+${nodeVulns.length - 3} more</div>` : ""}`;
           })()
         : "";
+      if (d.isOptionalGroup) {
+        showTip(
+          ev,
+          `<div style="font-weight:600;color:#f1f5f9">${d.alternatives.length} optional packages</div>
+                <div style="color:#64748b;font-size:11px">of ${d.parentName}</div>
+                <div style="color:#94a3b8;font-size:11px;margin-top:6px;max-width:280px">Only one of these typically installs (per OS/CPU). All are scanned in the audit.</div>
+                <div style="color:#475569;font-size:11px;margin-top:6px">Click to view alternatives</div>`,
+        );
+        return;
+      }
       showTip(
         ev,
         `<div style="font-weight:600;color:#f1f5f9">${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ""}</div>
@@ -178,6 +203,6 @@ export function renderSankey(
     .on("click", (ev, d) => {
       if (d.isRoot || !onNodeClick) return;
       hideTip();
-      onNodeClick(d.name);
+      onNodeClick(d);
     });
 }
