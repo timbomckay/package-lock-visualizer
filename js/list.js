@@ -1,5 +1,6 @@
 import { NO_PACKAGES_MSG, SEVERITY_COLOR } from "./constants.js";
 import { worstSeverity } from "./colors.js";
+import { getRegistryLink } from "./registry.js";
 
 const GROUP_CONFIG = [
   { key: "prod", label: "Production", color: "#10b981" },
@@ -52,7 +53,7 @@ export function renderList(container, nodes, treeSizeMap, rootDeps, vulnMap, onP
     for (const pkg of list) {
       const row = document.createElement("div");
       row.style.cssText = `
-        display:grid;grid-template-columns:1fr 100px 68px;
+        display:grid;grid-template-columns:1fr 100px 68px 18px;
         align-items:center;gap:10px;
         padding:7px 10px;margin-bottom:3px;
         border-radius:7px;cursor:pointer;
@@ -93,9 +94,32 @@ export function renderList(container, nodes, treeSizeMap, rootDeps, vulnMap, onP
       countDiv.textContent =
         pkg.treeSize === 0 ? "no deps" : `${pkg.treeSize} dep${pkg.treeSize !== 1 ? "s" : ""}`;
 
+      const linkSlot = document.createElement("div");
+      linkSlot.style.cssText = "display:flex;justify-content:flex-end";
+      const link = getRegistryLink(pkg);
+      if (link) {
+        const a = document.createElement("a");
+        a.href = link.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.title = `View on ${link.label}`;
+        a.style.cssText =
+          "color:#475569;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:3px;transition:color .1s,background .1s";
+        a.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
+        a.addEventListener("click", (e) => e.stopPropagation());
+        a.addEventListener("mouseenter", () => {
+          a.style.color = "#cbd5e1";
+        });
+        a.addEventListener("mouseleave", () => {
+          a.style.color = "#475569";
+        });
+        linkSlot.appendChild(a);
+      }
+
       row.appendChild(nameDiv);
       row.appendChild(barTrack);
       row.appendChild(countDiv);
+      row.appendChild(linkSlot);
 
       row.addEventListener("mouseenter", () => {
         row.style.background = "#1e293b";

@@ -4,6 +4,7 @@ import { NO_PACKAGES_MSG, SEVERITY_COLOR } from "./constants.js";
 import { depthColor, worstSeverity, vulnColor, getSeverity } from "./colors.js";
 import { showTip, hideTip } from "./tooltip.js";
 import { filterByDepth } from "./graph.js";
+import { getRegistryLink } from "./registry.js";
 
 export function renderSankey(
   container,
@@ -187,6 +188,10 @@ export function renderSankey(
         );
         return;
       }
+      const link = getRegistryLink(d);
+      const linkHtml = link
+        ? `<div style="margin-top:6px"><a href="${link.url}" target="_blank" rel="noopener" style="color:#94a3b8;font-size:11px;text-decoration:underline;text-decoration-color:#475569;text-underline-offset:2px">View on ${link.label} ↗</a></div>`
+        : "";
       showTip(
         ev,
         `<div style="font-weight:600;color:#f1f5f9">${d.name}${d.isRoot ? ' <span style="color:#818cf8">(root)</span>' : ""}</div>
@@ -196,6 +201,7 @@ export function renderSankey(
               <div style="color:#64748b">Tree size <span style="color:#94a3b8">${treeSize}</span> pkg${treeSize !== 1 ? "s" : ""}</div>
               ${!d.isRoot ? `<div style="color:#64748b">${typeLabel}</div>` : ""}
               ${vulnHtml}
+              ${linkHtml}
               ${!d.isRoot ? '<div style="color:#475569;font-size:11px;margin-top:4px">Click to isolate</div>' : ""}`,
       );
     })

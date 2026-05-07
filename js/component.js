@@ -12,6 +12,7 @@ import {
 import { renderSankey } from "./sankey.js";
 import { renderList } from "./list.js";
 import { queryOSV } from "./osv.js";
+import { getRegistryLink } from "./registry.js";
 
 export class PkgLockVisualizer extends LitElement {
   static properties = {
@@ -1024,9 +1025,10 @@ export class PkgLockVisualizer extends LitElement {
           <div style="overflow-y:auto;padding:8px 12px">
             ${g.alternatives.map((alt) => {
               const vulns = this._vulnMap?.get(alt.id);
+              const link = getRegistryLink(alt);
               return html`
                 <div
-                  class="flex items-center justify-between py-2 px-2 rounded hover:bg-slate-700/40 cursor-pointer"
+                  class="flex items-center justify-between py-2 px-2 rounded hover:bg-slate-700/40 cursor-pointer gap-2"
                   @click=${() => {
                     this._optionalGroup = null;
                     this._focusPackage(alt.name);
@@ -1041,12 +1043,39 @@ export class PkgLockVisualizer extends LitElement {
                     </div>
                     <div class="text-xs text-slate-500">v${alt.version}</div>
                   </div>
-                  ${vulns?.length
-                    ? html`<span
-                        style="font-size:10px;color:#ef4444;background:#1f1010;border:1px solid #ef444444;border-radius:3px;padding:1px 5px;white-space:nowrap"
-                        >⚠ ${vulns.length}</span
-                      >`
-                    : ""}
+                  <div class="flex items-center gap-2 shrink-0">
+                    ${vulns?.length
+                      ? html`<span
+                          style="font-size:10px;color:#ef4444;background:#1f1010;border:1px solid #ef444444;border-radius:3px;padding:1px 5px;white-space:nowrap"
+                          >⚠ ${vulns.length}</span
+                        >`
+                      : ""}
+                    ${link
+                      ? html`<a
+                          href=${link.url}
+                          target="_blank"
+                          rel="noopener"
+                          title="View on ${link.label}"
+                          class="text-slate-600 hover:text-slate-300 transition-colors flex items-center"
+                          @click=${(e) => e.stopPropagation()}
+                        >
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2.2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          >
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <polyline points="15 3 21 3 21 9" />
+                            <line x1="10" y1="14" x2="21" y2="3" />
+                          </svg>
+                        </a>`
+                      : ""}
+                  </div>
                 </div>
               `;
             })}

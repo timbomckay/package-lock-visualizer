@@ -1,4 +1,5 @@
 import { maxSatisfying } from "semver";
+import { parseResolvedUrl } from "./registry.js";
 
 export function buildSankeyData(lock, { includeDev = true } = {}) {
   const packages = lock.packages ?? {};
@@ -32,6 +33,8 @@ export function buildSankeyData(lock, { includeDev = true } = {}) {
         isOptional: info.optional ?? false,
         isRoot,
         isConflict: false,
+        registry: parseResolvedUrl(info.resolved)?.hostname ?? null,
+        resolved: info.resolved ?? null,
       });
     } else {
       const node = nodeMap.get(id);
@@ -93,7 +96,13 @@ export function buildSankeyData(lock, { includeDev = true } = {}) {
       const targetNode = nodeMap.get(targetId);
       if (!targetNode) continue;
       if (targetNode.isOptional) {
-        alternatives.push({ id: targetId, name: dep, version: resolved });
+        alternatives.push({
+          id: targetId,
+          name: dep,
+          version: resolved,
+          registry: targetNode.registry,
+          resolved: targetNode.resolved,
+        });
       } else {
         const key = `${id}→${targetId}`;
         if (!linkMap.has(key)) linkMap.set(key, { source: id, target: targetId, value: 1 });
