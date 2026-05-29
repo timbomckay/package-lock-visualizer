@@ -1,4 +1,69 @@
-import { maxSatisfying } from "semver";
+// Minimal semver maxSatisfying — handles the range types found in package-lock.json
+// (caret, tilde, comparators, OR, AND). Replaces the semver CDN dependency.
+function _parseSemver(v) {
+  const m = String(v).match(/^v?(\d+)(?:\.(\d+)(?:\.(\d+))?)?(?:[+\-].*)?$/);
+  return m ? [+m[1], +(m[2] ?? 0), +(m[3] ?? 0)] : null;
+}
+function _cmp(a, b) {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+}
+function _satisfies(v, range) {
+  if (range.includes("||")) return range.split("||").some((r) => _satisfies(v, r.trim()));
+  const pv = _parseSemver(v);
+  if (!pv) return false;
+  const r = range.trim();
+  if (!r || r === "*") return true;
+  const parts = r.split(/\s+/);
+  if (parts.length > 1) return parts.every((p) => _satisfies(v, p));
+  if (r.startsWith("^")) {
+    const b = _parseSemver(r.slice(1));
+    if (!b) return false;
+    if (_cmp(pv, b) < 0) return false;
+    if (b[0] > 0) return pv[0] === b[0];
+    if (b[1] > 0) return pv[0] === 0 && pv[1] === b[1];
+    return pv[0] === 0 && pv[1] === 0 && pv[2] === b[2];
+  }
+  if (r.startsWith("~")) {
+    const b = _parseSemver(r.slice(1));
+    return b ? _cmp(pv, b) >= 0 && pv[0] === b[0] && pv[1] === b[1] : false;
+  }
+  if (r.startsWith(">=")) {
+    const b = _parseSemver(r.slice(2));
+    return b ? _cmp(pv, b) >= 0 : false;
+  }
+  if (r.startsWith("<=")) {
+    const b = _parseSemver(r.slice(2));
+    return b ? _cmp(pv, b) <= 0 : false;
+  }
+  if (r.startsWith(">")) {
+    const b = _parseSemver(r.slice(1));
+    return b ? _cmp(pv, b) > 0 : false;
+  }
+  if (r.startsWith("<")) {
+    const b = _parseSemver(r.slice(1));
+    return b ? _cmp(pv, b) < 0 : false;
+  }
+  if (r.startsWith("=")) {
+    const b = _parseSemver(r.slice(1));
+    return b ? _cmp(pv, b) === 0 : false;
+  }
+  const b = _parseSemver(r);
+  return b ? _cmp(pv, b) === 0 : v === r;
+}
+function maxSatisfying(versions, range) {
+  let max = null,
+    maxP = null;
+  for (const v of versions) {
+    if (!_satisfies(v, range)) continue;
+    const p = _parseSemver(v);
+    if (p && (!maxP || _cmp(p, maxP) > 0)) {
+      max = v;
+      maxP = p;
+    }
+  }
+  return max;
+}
 import { parseResolvedUrl } from "./registry.js";
 
 export function buildSankeyData(lock, { includeDev = true } = {}) {
